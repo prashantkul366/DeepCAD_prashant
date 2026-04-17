@@ -15,6 +15,7 @@ class ConfigAE(object):
         # init hyperparameters and parse from command-line
         parser, args = self.parse()
 
+
         # set as attributes
         print("----Experiment Configuration-----")
         for k, v in args.__dict__.items():
@@ -31,6 +32,7 @@ class ConfigAE(object):
 
         self.log_dir = os.path.join(self.exp_dir, 'log')
         self.model_dir = os.path.join(self.exp_dir, 'model')
+        
         ensure_dirs([self.log_dir, self.model_dir])
 
         # GPU usage
