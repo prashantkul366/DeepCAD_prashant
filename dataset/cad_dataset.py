@@ -29,15 +29,16 @@ class CADDataset(Dataset):
         with open(self.path, "r") as fp:
             self.all_data = json.load(fp)[phase]
 
+        self.max_n_loops = config.max_n_loops          # Number of paths (N_P)
+        self.max_n_curves = config.max_n_curves            # Number of commands (N_C)
+        self.max_total_len = config.max_total_len
+        self.size = 256
+
         print(f"[Dataset] Phase: {phase} | Total samples: {len(self.all_data)}")
         print(f"[Dataset] data_root: {self.raw_data}")
         print(f"[Dataset] First 3 IDs: {self.all_data[:3]}")
         print(f"[Dataset] max_total_len: {self.max_total_len}, max_n_loops: {self.max_n_loops}, max_n_curves: {self.max_n_curves}")
 
-        self.max_n_loops = config.max_n_loops          # Number of paths (N_P)
-        self.max_n_curves = config.max_n_curves            # Number of commands (N_C)
-        self.max_total_len = config.max_total_len
-        self.size = 256
 
     def get_data_by_id(self, data_id):
         idx = self.all_data.index(data_id)
@@ -108,7 +109,7 @@ class CADDataset(Dataset):
             print(f"  command : {command.shape} dtype={command.dtype}")  # (60,)
             print(f"  args    : {args.shape}   dtype={args.dtype}")      # (60, 16)
             print(f"  command values : {command.tolist()}")
-            
+
         return {"command": command, "args": args, "id": data_id}
 
     def __len__(self):
