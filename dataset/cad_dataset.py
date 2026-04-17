@@ -13,6 +13,9 @@ def get_dataloader(phase, config, shuffle=None):
     dataset = CADDataset(phase, config)
     dataloader = DataLoader(dataset, batch_size=config.batch_size, shuffle=is_shuffle, num_workers=config.num_workers,
                             worker_init_fn=np.random.seed())
+    
+    print(f"[Dataloader] Phase: {phase} | Batches: {len(dataloader)} | Batch size: {config.batch_size} | Shuffle: {is_shuffle}")
+
     return dataloader
 
 
@@ -25,6 +28,11 @@ class CADDataset(Dataset):
         self.path = os.path.join(config.data_root, "train_val_test_split.json")
         with open(self.path, "r") as fp:
             self.all_data = json.load(fp)[phase]
+
+        print(f"[Dataset] Phase: {phase} | Total samples: {len(self.all_data)}")
+        print(f"[Dataset] data_root: {self.raw_data}")
+        print(f"[Dataset] First 3 IDs: {self.all_data[:3]}")
+        print(f"[Dataset] max_total_len: {self.max_total_len}, max_n_loops: {self.max_n_loops}, max_n_curves: {self.max_n_curves}")
 
         self.max_n_loops = config.max_n_loops          # Number of paths (N_P)
         self.max_n_curves = config.max_n_curves            # Number of commands (N_C)
@@ -52,6 +60,16 @@ class CADDataset(Dataset):
                 h5_path2 = os.path.join(self.raw_data, data_id2 + ".h5")
                 with h5py.File(h5_path2, "r") as fp:
                     cad_vec2 = fp["vec"][:]
+                
+                # after: cad_vec = fp["vec"][:]
+                if index < 2:
+                    print(f"\n[STEP 1 | Item {index}] Raw h5 load")
+                    print(f"  data_id : {data_id}")          # e.g. '0000/00000007'
+                    print(f"  h5_path : {h5_path}")
+                    print(f"  cad_vec shape : {cad_vec.shape}")   # (seq_len, 1+N_ARGS) e.g. (34, 17)
+                    print(f"  cad_vec[0]    : {cad_vec[0]}")       # first command row
+                    print(f"  commands seen : {np.unique(cad_vec[:,0])}")  # unique command ids
+
                 command2 = cad_vec2[:, 0]
                 ext_indices2 = np.where(command2 == EXT_IDX)[0]
                 ext_vec2 = np.split(cad_vec2, ext_indices2 + 1, axis=0)[:-1]
@@ -73,11 +91,24 @@ class CADDataset(Dataset):
 
         pad_len = self.max_total_len - cad_vec.shape[0]
         cad_vec = np.concatenate([cad_vec, EOS_VEC[np.newaxis].repeat(pad_len, axis=0)], axis=0)
+        # after: cad_vec = np.concatenate([cad_vec, EOS_VEC...])
+        if index < 2:
+            print(f"\n[STEP 2 | Item {index}] After padding to max_total_len={self.max_total_len}")
+            print(f"  cad_vec shape : {cad_vec.shape}")    # (max_total_len, 17) e.g. (60, 17)
+            print(f"  command col   : {cad_vec[:, 0]}")    # full command sequence
+            print(f"  args sample   : {cad_vec[0, 1:]}")   # args of first command
 
         command = cad_vec[:, 0]
         args = cad_vec[:, 1:]
         command = torch.tensor(command, dtype=torch.long)
         args = torch.tensor(args, dtype=torch.long)
+
+        if index < 2:
+            print(f"\n[STEP 3 | Item {index}] Tensors returned to DataLoader")
+            print(f"  command : {command.shape} dtype={command.dtype}")  # (60,)
+            print(f"  args    : {args.shape}   dtype={args.dtype}")      # (60, 16)
+            print(f"  command values : {command.tolist()}")
+            
         return {"command": command, "args": args, "id": data_id}
 
     def __len__(self):

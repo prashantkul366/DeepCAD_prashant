@@ -13,7 +13,18 @@ def main():
 
     # create network and training agent
     tr_agent = TrainerAE(cfg)
+    print(f"[Model] Network built. Parameters: {sum(p.numel() for p in tr_agent.net.parameters()):,}")
 
+    print("\n" + "="*60)
+    print("[Model Architecture]")
+    print(tr_agent.net)
+    print("="*60)
+    print(f"[Model] Encoder params:    {sum(p.numel() for p in tr_agent.net.encoder.parameters()):,}")
+    print(f"[Model] Bottleneck params: {sum(p.numel() for p in tr_agent.net.bottleneck.parameters()):,}")
+    print(f"[Model] Decoder params:    {sum(p.numel() for p in tr_agent.net.decoder.parameters()):,}")
+    print(f"[Model] Total params:      {sum(p.numel() for p in tr_agent.net.parameters()):,}")
+    print("="*60 + "\n")
+    
     # load from checkpoint if provided
     if cfg.cont:
         tr_agent.load_ckpt(cfg.ckpt)
@@ -53,6 +64,7 @@ def main():
 
         if clock.epoch % cfg.save_frequency == 0:
             tr_agent.save_ckpt()
+            print(f"[Epoch {e}] Checkpoint saved to {tr_agent.model_dir}")
 
         # if clock.epoch % 10 == 0:
         tr_agent.save_ckpt('latest')

@@ -150,9 +150,22 @@ class CADTransformer(nn.Module):
                 z=None, return_tgt=True, encode_mode=False):
         commands_enc_, args_enc_ = _make_seq_first(commands_enc, args_enc)  # Possibly None, None
 
+        if hasattr(self, '_debug') and self._debug:
+            print(f"\n[STEP 5a] After _make_seq_first (seq-first format)")
+            print(f"  commands_enc_ : {commands_enc_.shape}")  # (60, N)
+            print(f"  args_enc_     : {args_enc_.shape}")      # (60, N, 16)
         if z is None:
             z = self.encoder(commands_enc_, args_enc_)
+            if hasattr(self, '_debug') and self._debug:
+                print(f"[STEP 5b] After Encoder")
+                print(f"  z shape : {z.shape}")       # (1, N, 256)
+                print(f"  z mean  : {z.mean():.4f}  std: {z.std():.4f}")
             z = self.bottleneck(z)
+            if hasattr(self, '_debug') and self._debug:
+                print(f"[STEP 5c] After Bottleneck (Tanh squash)")
+                print(f"  z shape : {z.shape}")       # (1, N, 256)
+                print(f"  z range : [{z.min():.4f}, {z.max():.4f}]")  # should be in (-1, 1)
+
         else:
             z = _make_seq_first(z)
 
@@ -161,6 +174,11 @@ class CADTransformer(nn.Module):
         out_logits = self.decoder(z)
         out_logits = _make_batch_first(*out_logits)
 
+        if hasattr(self, '_debug') and self._debug:
+            print(f"[STEP 5d] After Decoder")
+            print(f"  command_logits : {out_logits[0].shape}")  # (N, 60, n_commands)
+            print(f"  args_logits    : {out_logits[1].shape}")  # (N, 60, 16, 257)
+            
         res = {
             "command_logits": out_logits[0],
             "args_logits": out_logits[1]

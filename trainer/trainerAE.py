@@ -24,6 +24,10 @@ class TrainerAE(BaseTrainer):
         commands = data['command'].cuda() # (N, S)
         args = data['args'].cuda()  # (N, S, N_ARGS)
 
+        self.net._debug = (self.clock.step < 3)
+        if self.clock.step == 0:
+            print(f"[Forward] commands: {commands.shape} | args: {args.shape}")
+
         outputs = self.net(commands, args)
         loss_dict = self.loss_func(outputs)
 
@@ -102,3 +106,7 @@ class TrainerAE(BaseTrainer):
                                 {"line": line_acc, "arc": arc_acc, "circle": circle_acc,
                                  "plane": sket_plane_acc, "trans": sket_trans_acc, "extent": extent_one_acc},
                                 global_step=self.clock.epoch)
+    
+        print(f"[Eval Epoch {self.clock.epoch}] "
+            f"line: {line_acc:.4f} | arc: {arc_acc:.4f} | circle: {circle_acc:.4f} | "
+            f"plane: {sket_plane_acc:.4f} | trans: {sket_trans_acc:.4f} | extent: {extent_one_acc:.4f}")

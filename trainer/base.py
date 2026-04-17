@@ -64,6 +64,7 @@ class BaseTrainer(object):
             'scheduler_state_dict': self.scheduler.state_dict(),
         }, save_path)
 
+        print(f"[Checkpoint] Saving to: {save_path}")
         self.net.cuda()
 
     def load_ckpt(self, name=None):
