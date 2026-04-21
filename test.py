@@ -36,6 +36,9 @@ def reconstruct(cfg):
     test_loader = get_dataloader('test', cfg)
     print("Total number of test data:", len(test_loader))
 
+    print(f"[Reconstruct] Using ckpt: {cfg.ckpt}")
+    print(f"[Reconstruct] Saving results to: {cfg.outputs}")
+
     if cfg.outputs is None:
         cfg.outputs = "{}/results/test_{}".format(cfg.exp_dir, cfg.ckpt)
     ensure_dir(cfg.outputs)
@@ -79,7 +82,7 @@ def encode(cfg):
     fp = h5py.File(save_path, 'w')
     for phase in ['train', 'validation', 'test']:
         train_loader = get_dataloader(phase, cfg, shuffle=False)
-
+        print(f"\n[Encode] Phase: {phase} | Batches: {len(train_loader)}")
         # encode
         all_zs = []
         pbar = tqdm(train_loader)
@@ -90,8 +93,10 @@ def encode(cfg):
                 all_zs.append(z)
         all_zs = np.concatenate(all_zs, axis=0)
         print(all_zs.shape)
+        print(f"[Encode] {phase} — z shape: {all_zs.shape} | mean: {all_zs.mean():.4f} | std: {all_zs.std():.4f}")
         fp.create_dataset('{}_zs'.format(phase), data=all_zs)
     fp.close()
+    print(f"\n[Encode] All latent vectors saved to: {save_path}")
 
 
 def decode(cfg):
@@ -105,6 +110,9 @@ def decode(cfg):
     # load latent zs
     with h5py.File(cfg.z_path, 'r') as fp:
         zs = fp['zs'][:]
+    
+    print(f"[Decode] Loaded z from: {cfg.z_path}")
+    print(f"[Decode] z shape: {zs.shape} | Saving to: {save_dir}")
     save_dir = cfg.z_path.split('.')[0] + '_dec'
     ensure_dir(save_dir)
 
