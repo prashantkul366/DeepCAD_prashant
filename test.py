@@ -111,9 +111,15 @@ def decode(cfg):
     with h5py.File(cfg.z_path, 'r') as fp:
         zs = fp['zs'][:]
     
+    # print(f"[Decode] Loaded z from: {cfg.z_path}")
+    # print(f"[Decode] z shape: {zs.shape} | Saving to: {save_dir}")
+    # save_dir = cfg.z_path.split('.')[0] + '_dec'
+   
+
     print(f"[Decode] Loaded z from: {cfg.z_path}")
-    print(f"[Decode] z shape: {zs.shape} | Saving to: {save_dir}")
+    print(f"[Decode] z shape: {zs.shape}")
     save_dir = cfg.z_path.split('.')[0] + '_dec'
+    print(f"[Decode] Saving to: {save_dir}")
     ensure_dir(save_dir)
 
     # decode
