@@ -24,7 +24,9 @@ if not cfg.test:
     train_loader = get_dataloader(cfg)
 
     print(f"[LGAN Train] Latent vectors loaded | Batches: {len(train_loader)}")
-    print(f"[LGAN Train] Training for {cfg.n_epochs} epochs | Saving to: {cfg.exp_dir}")
+    # print(f"[LGAN Train] Training for {cfg.n_epochs} epochs | Saving to: {cfg.exp_dir}")
+    print(f"[LGAN Train] Training for {cfg.n_iters} iters | Saving to: {cfg.exp_dir}")
+
 
     agent.train(train_loader)
     print(f"[LGAN Train] Training complete.")
