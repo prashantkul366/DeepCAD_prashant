@@ -73,9 +73,13 @@ class TrainerJEPA:
         commands = data['command'].cuda()   # (N, S)
         args     = data['args'].cuda()      # (N, S, n_args)
 
-        # 1. Get target mask
         if self.is_hierarchical:
-            level, target_mask = self.masker(commands)
+            target_mask, level_per_seq = self.masker(commands)
+            # For hierarchical: route each sequence to correct predictor head
+            # But since sequences in a batch may have different levels,
+            # we use the MAJORITY level for the predictor head this step.
+            # (All sequences share one forward pass through the encoder.)
+            level = max(set(level_per_seq), key=level_per_seq.count)
         else:
             target_mask = self.masker(commands)
             level = None
