@@ -1,4 +1,3 @@
-# %%writefile /content/DeepCAD_prashant/config/configJEPA.py
 import os
 import json
 import shutil
@@ -30,9 +29,7 @@ class ConfigJEPA:
         self.model_dir = os.path.join(self.exp_dir, 'model')
 
         if self.is_train and not self.cont and os.path.exists(self.exp_dir):
-            r = input('Experiment exists — overwrite? (y/n) ')
-            if r != 'y':
-                exit()
+            print(f'Experiment exists at {self.exp_dir} — overwriting.')
             shutil.rmtree(self.exp_dir)
 
         _ensure_dirs([self.log_dir, self.model_dir])
@@ -46,68 +43,53 @@ class ConfigJEPA:
 
     def _set_defaults(self):
         # ── Inherited sequence format ─────────────────────────
-        self.args_dim        = ARGS_DIM          # 256
-        self.n_args          = N_ARGS            # 16
-        self.n_commands      = len(ALL_COMMANDS) # 6
+        self.args_dim        = ARGS_DIM
+        self.n_args          = N_ARGS
+        self.n_commands      = len(ALL_COMMANDS)
         self.d_model         = 256
         self.n_layers        = 4
         self.n_heads         = 8
         self.dim_feedforward = 512
         self.dropout         = 0.1
         self.use_group_emb   = True
-        self.max_n_ext       = MAX_N_EXT         # 10
-        self.max_n_loops     = MAX_N_LOOPS       # 6
-        self.max_n_curves    = MAX_N_CURVES      # 15
+        self.max_n_ext       = MAX_N_EXT
+        self.max_n_loops     = MAX_N_LOOPS
+        self.max_n_curves    = MAX_N_CURVES
         self.max_num_groups  = 30
-        self.max_total_len   = MAX_TOTAL_LEN     # 60
+        self.max_total_len   = MAX_TOTAL_LEN
 
         # ── JEPA specific ─────────────────────────────────────
-        self.ema_decay        = 0.996
-        self.pred_dim         = 128
-        self.pred_depth       = 4
-        self.pred_heads       = 4
-        self.pred_ffn_dim     = 256
-        self.target_norm      = True
-        self.mask_ratio       = 0.40    # block and group level
-        self.mask_ratio_token = 0.50    # token level (higher for single-block seqs)
-        self.n_mask_groups    = 2
-        
+        self.ema_decay         = 0.996
+        self.ema_warmup_steps  = 5000   # ramp EMA decay over this many steps
+        self.pred_dim          = 128
+        self.pred_depth        = 4
+        self.pred_heads        = 4
+        self.pred_ffn_dim      = 256
+        self.target_norm       = False  # raw smooth_l1, no unit sphere collapse
+        self.mask_ratio        = 0.40   # block and group level
+        self.mask_ratio_token  = 0.70   # token level — harder task for single-block seqs
+        self.n_mask_groups     = 2
+        self.vicreg_lambda     = 1.0    # VICReg variance coefficient
 
     def _parse(self):
         parser = argparse.ArgumentParser()
-        parser.add_argument('--proj_dir',
-                            type=str, default='proj_log')
-        parser.add_argument('--data_root',
-                            type=str, default='data')
-        parser.add_argument('--exp_name',
-                            type=str, default='cadjjepa_block')
-        parser.add_argument('-g', '--gpu_ids',
-                            type=str, default='0')
-        parser.add_argument('--batch_size',
-                            type=int, default=256)
-        parser.add_argument('--num_workers',
-                            type=int, default=4)
-        parser.add_argument('--nr_epochs',
-                            type=int, default=300)
-        parser.add_argument('--lr',
-                            type=float, default=1.5e-4)
-        parser.add_argument('--grad_clip',
-                            type=float, default=1.0)
-        parser.add_argument('--warmup_step',
-                            type=int, default=2000)
-        parser.add_argument('--masking_strategy',
-                            type=str, default='block',
+        parser.add_argument('--proj_dir',          type=str,   default='proj_log')
+        parser.add_argument('--data_root',          type=str,   default='data')
+        parser.add_argument('--exp_name',           type=str,   default='cadjjepa_block')
+        parser.add_argument('-g', '--gpu_ids',      type=str,   default='0')
+        parser.add_argument('--batch_size',         type=int,   default=256)
+        parser.add_argument('--num_workers',        type=int,   default=4)
+        parser.add_argument('--nr_epochs',          type=int,   default=300)
+        parser.add_argument('--lr',                 type=float, default=1.5e-4)
+        parser.add_argument('--grad_clip',          type=float, default=1.0)
+        parser.add_argument('--warmup_step',        type=int,   default=2000)
+        parser.add_argument('--masking_strategy',   type=str,   default='block',
                             choices=['block', 'token', 'group', 'hierarchical'])
-        parser.add_argument('--save_frequency',
-                            type=int, default=10)
-        parser.add_argument('--val_frequency',
-                            type=int, default=5)
-        parser.add_argument('--augment',
-                            action='store_true')
-        parser.add_argument('--continue',
-                            dest='cont', action='store_true')
-        parser.add_argument('--ckpt',
-                            type=str, default='latest')
-        parser.add_argument('--seed', type=int, default=42)
+        parser.add_argument('--save_frequency',     type=int,   default=10)
+        parser.add_argument('--val_frequency',      type=int,   default=5)
+        parser.add_argument('--augment',            action='store_true')
+        parser.add_argument('--continue',           dest='cont', action='store_true')
+        parser.add_argument('--ckpt',               type=str,   default='latest')
+        parser.add_argument('--seed',               type=int,   default=42)
         args = parser.parse_args()
         return parser, args

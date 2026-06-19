@@ -1,4 +1,3 @@
-# %%writefile /content/DeepCAD_prashant/trainer/trainerJEPA.py
 import os
 import numpy as np
 import torch
@@ -11,21 +10,23 @@ from model.ema_target import EMATargetEncoder
 from model.predictor import JEPAPredictor, HierarchicalPredictor
 from model.masker import get_masker
 from model.model_utils import _get_key_padding_mask
-from dataset.cad_dataset import get_dataloader
 from model.collapse_monitor import CollapseMonitor
+from dataset.cad_dataset import get_dataloader
+from cadlib.macro import EOS_IDX
 
 
 class TrainerJEPA:
     def __init__(self, cfg):
-        self.cfg              = cfg
-        self.global_step      = 0
-        self.is_hierarchical  = (cfg.masking_strategy == 'hierarchical')
+        self.cfg             = cfg
+        self.global_step     = 0
+        self.is_hierarchical = (cfg.masking_strategy == 'hierarchical')
+        self.vicreg_lambda   = getattr(cfg, 'vicreg_lambda', 1.0)
         self._build_models()
         self._build_optimizer()
-        self.masker = get_masker(cfg.masking_strategy, cfg)
-        self.monitor = CollapseMonitor(cfg.d_model, rank_threshold=0.70)
+        self.masker         = get_masker(cfg.masking_strategy, cfg)
+        self.monitor        = CollapseMonitor(cfg.d_model, rank_threshold=0.70)
         self._max_rank_seen = 0.0
-        self._rank_burn_in  = 20   # don't warn before epoch 20
+        self._rank_burn_in  = 20
         self._load_monitor_sample()
 
     # ──────────────────────────────────────────────────────────
@@ -34,7 +35,6 @@ class TrainerJEPA:
 
     def _build_models(self):
         cfg = self.cfg
-
         self.encoder = JEPAEncoder(cfg).cuda()
         self.ema     = EMATargetEncoder(self.encoder, decay=cfg.ema_decay)
         self.ema.encoder = self.ema.encoder.cuda()
@@ -54,7 +54,7 @@ class TrainerJEPA:
 
         n_enc  = sum(p.numel() for p in self.encoder.parameters())
         n_pred = sum(p.numel() for p in self.predictor.parameters())
-        print(f"  Encoder params : {n_enc/1e6:.2f}M")
+        print(f"  Encoder params  : {n_enc/1e6:.2f}M")
         print(f"  Predictor params: {n_pred/1e6:.2f}M")
 
     def _build_optimizer(self):
@@ -77,30 +77,27 @@ class TrainerJEPA:
         )
 
     # ──────────────────────────────────────────────────────────
-    #  EMA update with ramp
+    #  EMA — gradual ramp over ema_warmup_steps
     # ──────────────────────────────────────────────────────────
 
     def _update_ema(self):
-        # Ramp EMA decay from 0.99 → target over first 1000 steps
-        t     = min(1.0, self.global_step / 1000)
+        warmup_steps = getattr(self.cfg, 'ema_warmup_steps', 5000)
+        t     = min(1.0, self.global_step / warmup_steps)
         decay = 0.99 + (self.cfg.ema_decay - 0.99) * t
         self.ema.update(self.encoder, decay=decay)
 
-    def _load_monitor_sample(self, n=512):
-        """
-        Load a fixed sample of validation sequences for epoch-level rank monitoring.
-        Stored on CPU — moved to GPU only during the rank computation call.
-        Uses batch_size=n to load in one shot.
-        """
-        from dataset.cad_dataset import get_dataloader
+    # ──────────────────────────────────────────────────────────
+    #  Monitor sample
+    # ──────────────────────────────────────────────────────────
 
+    def _load_monitor_sample(self, n=512):
         class _Cfg:
             pass
-        cfg             = _Cfg()
-        cfg.data_root   = self.cfg.data_root
-        cfg.batch_size  = n
-        cfg.num_workers = 0      # no workers — this is a one-time load
-        cfg.augment     = False
+        cfg              = _Cfg()
+        cfg.data_root    = self.cfg.data_root
+        cfg.batch_size   = n
+        cfg.num_workers  = 0
+        cfg.augment      = False
         cfg.max_n_loops  = self.cfg.max_n_loops
         cfg.max_n_curves = self.cfg.max_n_curves
         cfg.max_total_len = self.cfg.max_total_len
@@ -108,16 +105,42 @@ class TrainerJEPA:
 
         loader = get_dataloader('validation', cfg, shuffle=True)
         batch  = next(iter(loader))
-        self.monitor_cmds = batch['command'][:n]   # (N, 60) long, CPU
-        self.monitor_args = batch['args'][:n]      # (N, 60, 16) long, CPU
-        print(f"  Collapse monitor sample: {self.monitor_cmds.shape[0]} val sequences")
+        self.monitor_cmds = batch['command'][:n]
+        self.monitor_args = batch['args'][:n]
+        print(f"  Collapse monitor: {self.monitor_cmds.shape[0]} val sequences")
 
-        
+    # ──────────────────────────────────────────────────────────
+    #  VICReg variance regularization
+    # ──────────────────────────────────────────────────────────
+
+    def _vicreg_variance_loss(self, ctx_emb, commands, target_mask):
+        """
+        VICReg variance term (Bardes et al. 2022).
+        Forces std of each embedding dim >= 1 across the batch.
+        Applied to mean-pooled CONTEXT positions only
+        (non-masked, non-EOS) — doesn't include mask_embedding positions.
+
+        ctx_emb:     (S, N, d_model) seq-first, float32
+        commands:    (N, S) batch-first, long
+        target_mask: (N, S) bool — True at masked positions
+        Returns: scalar variance loss
+        """
+        commands_sf = commands.permute(1, 0)              # (S, N)
+        is_eos      = (commands_sf == EOS_IDX)            # (S, N)
+        is_masked   = target_mask.permute(1, 0)           # (S, N)
+        # Context positions: visible to encoder, not EOS padding
+        valid = (~is_eos & ~is_masked).float().unsqueeze(-1)  # (S, N, 1)
+
+        z = (ctx_emb.float() * valid).sum(0) / valid.sum(0).clamp(min=1)  # (N, d)
+        z = z - z.mean(dim=0)
+        std = torch.sqrt(z.var(dim=0) + 1e-4)
+        return torch.mean(F.relu(1.0 - std))
+
     # ──────────────────────────────────────────────────────────
     #  Forward
     # ──────────────────────────────────────────────────────────
 
-    def _forward(self, data):
+    def _forward(self, data, compute_vicreg=True):
         commands = data['command'].cuda()   # (N, S)
         args     = data['args'].cuda()      # (N, S, n_args)
 
@@ -125,88 +148,76 @@ class TrainerJEPA:
         if self.is_hierarchical:
             target_mask, level_per_seq = self.masker(commands)
         else:
-            target_mask    = self.masker(commands)
-            level_per_seq  = None
+            target_mask   = self.masker(commands)
+            level_per_seq = None
 
         if target_mask.sum() == 0:
             return torch.tensor(0.0, device='cuda', requires_grad=True)
 
         # ── Context encoder ──────────────────────────────────
-        ctx_emb = self.encoder(commands, args, target_mask=target_mask)  # (S,N,d)
+        ctx_emb = self.encoder(commands, args, target_mask=target_mask)  # (S, N, d)
 
         # ── EMA target encoder (no grad) ─────────────────────
         with torch.no_grad():
             full_emb = self.ema(commands, args)   # (S, N, d)
 
         # ── Key padding mask for predictor ───────────────────
-        commands_sf      = commands.permute(1, 0)                          # (S, N)
-        key_padding_mask = _get_key_padding_mask(commands_sf, seq_dim=0)   # (N, S)
+        commands_sf      = commands.permute(1, 0)
+        key_padding_mask = _get_key_padding_mask(commands_sf, seq_dim=0)
 
-        # ── Predict + loss ───────────────────────────────────
+        # ── Prediction loss ──────────────────────────────────
         if self.is_hierarchical:
-            loss = self._hierarchical_loss(
+            pred_loss = self._hierarchical_loss(
                 ctx_emb, full_emb, target_mask,
                 key_padding_mask, level_per_seq
             )
         else:
-            pred_all       = self.predictor(ctx_emb, key_padding_mask)    # (S,N,d)
-            target_sf      = target_mask.permute(1, 0)                    # (S, N)
-            pred_at_target = pred_all[target_sf]
-            true_at_target = full_emb[target_sf]
+            pred_all       = self.predictor(ctx_emb, key_padding_mask)  # (S, N, d)
+            target_sf      = target_mask.permute(1, 0)                  # (S, N)
+            pred_at_target = pred_all[target_sf].float()
+            true_at_target = full_emb[target_sf].float()
 
-            # if self.cfg.target_norm:
-            #     pred_at_target = F.normalize(pred_at_target, dim=-1)
-            #     true_at_target = F.normalize(true_at_target, dim=-1)
-
-            # loss = F.smooth_l1_loss(pred_at_target, true_at_target.detach())
-
-            # Cast to float32 before loss — critical when autocast (bfloat16) is active
             if self.cfg.target_norm:
-                pred_at_target = F.normalize(pred_at_target.float(), dim=-1)
-                true_at_target = F.normalize(true_at_target.float(), dim=-1)
-            else:
-                pred_at_target = pred_at_target.float()
-                true_at_target = true_at_target.float()
+                pred_at_target = F.normalize(pred_at_target, dim=-1)
+                true_at_target = F.normalize(true_at_target, dim=-1)
 
-            loss = F.smooth_l1_loss(pred_at_target, true_at_target.detach())
+            pred_loss = F.smooth_l1_loss(pred_at_target, true_at_target.detach())
+
+        # ── VICReg variance regularization ───────────────────
+        # Applied during training only, not validation.
+        # Prevents representational collapse by enforcing diversity
+        # across the batch in each embedding dimension.
+        if compute_vicreg and self.vicreg_lambda > 0:
+            vicreg = self._vicreg_variance_loss(ctx_emb, commands, target_mask)
+            loss   = pred_loss + self.vicreg_lambda * vicreg
+        else:
+            loss = pred_loss
 
         return loss
 
     def _hierarchical_loss(self, ctx_emb, full_emb, target_mask,
                            key_padding_mask, level_per_seq):
-        """
-        Route each sequence to its corresponding predictor head,
-        compute per-level loss, average across levels.
-        """
         losses = []
         for level in ['token', 'block', 'group']:
             idx = [i for i, l in enumerate(level_per_seq) if l == level]
             if not idx:
                 continue
 
-            idx_t    = torch.tensor(idx, device='cuda')
-            ctx_lv   = ctx_emb[:, idx_t, :]         # (S, n_lv, d)
-            kpm_lv   = key_padding_mask[idx_t, :]   # (n_lv, S)
-            full_lv  = full_emb[:, idx_t, :]        # (S, n_lv, d)
-            mask_lv  = target_mask[idx_t, :]        # (n_lv, S)
+            idx_t   = torch.tensor(idx, device='cuda')
+            ctx_lv  = ctx_emb[:, idx_t, :]
+            kpm_lv  = key_padding_mask[idx_t, :]
+            full_lv = full_emb[:, idx_t, :]
+            mask_lv = target_mask[idx_t, :]
 
-            pred     = self.predictor(ctx_lv, level, kpm_lv)  # (S, n_lv, d)
+            pred    = self.predictor(ctx_lv, level, kpm_lv)
 
-            mask_sf  = mask_lv.permute(1, 0)         # (S, n_lv)
-            pred_at  = pred[mask_sf]
-            true_at  = full_lv[mask_sf]
+            mask_sf = mask_lv.permute(1, 0)
+            pred_at = pred[mask_sf].float()
+            true_at = full_lv[mask_sf].float()
 
-            # if self.cfg.target_norm:
-            #     pred_at = F.normalize(pred_at, dim=-1)
-            #     true_at = F.normalize(true_at, dim=-1)
-
-            # losses.append(F.smooth_l1_loss(pred_at, true_at.detach()))
             if self.cfg.target_norm:
-                pred_at = F.normalize(pred_at.float(), dim=-1)
-                true_at = F.normalize(true_at.float(), dim=-1)
-            else:
-                pred_at = pred_at.float()
-                true_at = true_at.float()
+                pred_at = F.normalize(pred_at, dim=-1)
+                true_at = F.normalize(true_at, dim=-1)
 
             losses.append(F.smooth_l1_loss(pred_at, true_at.detach()))
 
@@ -226,9 +237,8 @@ class TrainerJEPA:
 
         for data in pbar:
             self.optimizer.zero_grad()
-            # loss = self._forward(data)
             with torch.amp.autocast('cuda', dtype=torch.bfloat16):
-                loss = self._forward(data)
+                loss = self._forward(data, compute_vicreg=True)
             loss.backward()
             nn.utils.clip_grad_norm_(
                 list(self.encoder.parameters()) +
@@ -248,11 +258,12 @@ class TrainerJEPA:
 
     @torch.no_grad()
     def _val_epoch(self, loader):
+        """Validation uses prediction loss only — no VICReg regularization."""
         self.encoder.eval()
         self.predictor.eval()
         losses = []
         for data in tqdm(loader, desc='Val', leave=False):
-            losses.append(self._forward(data).item())
+            losses.append(self._forward(data, compute_vicreg=False).item())
         return float(np.mean(losses))
 
     # ──────────────────────────────────────────────────────────
@@ -263,12 +274,12 @@ class TrainerJEPA:
         name = tag or f'ckpt_ep{epoch:04d}'
         path = os.path.join(self.cfg.model_dir, f'{name}.pt')
         torch.save({
-            'epoch':        epoch,
-            'global_step':  self.global_step,
-            'encoder':      self.encoder.state_dict(),
-            'ema_encoder':  self.ema.encoder.state_dict(),
-            'predictor':    self.predictor.state_dict(),
-            'optimizer':    self.optimizer.state_dict(),
+            'epoch':       epoch,
+            'global_step': self.global_step,
+            'encoder':     self.encoder.state_dict(),
+            'ema_encoder': self.ema.encoder.state_dict(),
+            'predictor':   self.predictor.state_dict(),
+            'optimizer':   self.optimizer.state_dict(),
         }, path)
         return path
 
@@ -300,7 +311,6 @@ class TrainerJEPA:
             print(f'Resumed from epoch {start_epoch}')
 
         log_path = os.path.join(cfg.log_dir, 'losses.txt')
-        best_val = float('inf')
 
         for epoch in range(start_epoch, cfg.nr_epochs):
             train_loss = self._train_epoch(train_loader, epoch)
@@ -317,12 +327,11 @@ class TrainerJEPA:
             with open(log_path, 'a') as f:
                 f.write(msg + '\n')
 
-            # ── Rank monitoring (epoch level) ──────────────────
+            # ── Rank monitoring ────────────────────────────────
             rank = self.monitor.compute_rank(
                 self.ema.encoder, self.monitor_cmds, self.monitor_args
             )
             self._max_rank_seen = max(self._max_rank_seen, rank)
-            # Relative collapse: rank drops below 50% of best seen, after burn-in
             collapsing = (
                 epoch >= self._rank_burn_in and
                 self._max_rank_seen > 0 and
@@ -336,15 +345,11 @@ class TrainerJEPA:
                 f.write(rank_msg + '\n')
             if collapsing:
                 print(f'  *** COLLAPSE WARNING ep={epoch} '
-                      f'rank={rank:.3f} dropped below '
-                      f'50% of max={self._max_rank_seen:.3f} ***')
+                      f'rank={rank:.3f} < 50% of max={self._max_rank_seen:.3f} ***')
 
-
-            # Save every save_frequency epochs (needed for pretraining dynamics)
+            # ── Checkpoints ────────────────────────────────────
             if epoch % cfg.save_frequency == 0 or epoch == cfg.nr_epochs - 1:
                 self.save_ckpt(epoch)
-
-            # Always save latest (for resume)
             self.save_ckpt(epoch, tag='latest')
 
         print('Training complete.')
