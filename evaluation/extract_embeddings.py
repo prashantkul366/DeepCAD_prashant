@@ -55,7 +55,8 @@ def extract(ckpt_path, data_root, phase='test',
     cfg     = make_cfg(data_root, batch_size)
     encoder = JEPAEncoder(cfg).cuda()
 
-    ckpt    = torch.load(ckpt_path, map_location='cuda')
+    # ckpt    = torch.load(ckpt_path, map_location='cuda')
+    ckpt = torch.load(ckpt_path, map_location='cuda', weights_only=False)
     # Use EMA encoder — it produces better representations
     encoder.load_state_dict(ckpt['ema_encoder'])
     encoder.eval()
