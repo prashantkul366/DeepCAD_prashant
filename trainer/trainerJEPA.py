@@ -471,14 +471,16 @@ class TrainerJEPA:
         for epoch in range(start_epoch, cfg.nr_epochs):
             train_loss = self._train_epoch(train_loader, epoch)
 
-            val_loss = 0.0
+            # val_loss = 0.0
+            val_loss = None
             if epoch % cfg.val_frequency == 0:
                 val_loss = self._val_epoch(val_loader)
 
             lr_now = self.optimizer.param_groups[0]['lr']
-            msg    = (f'ep={epoch:04d}  train={train_loss:.5f}  '
-                      f'val={val_loss:.5f}  lr={lr_now:.2e}  '
-                      f'step={self.global_step}')
+            val_str = f'{val_loss:.5f}' if val_loss is not None else '-------'
+            msg = (f'ep={epoch:04d}  train={train_loss:.5f}  '
+                f'val={val_str}  lr={lr_now:.2e}  '
+                f'step={self.global_step}')
             print(msg)
             with open(log_path, 'a') as f:
                 f.write(msg + '\n')
