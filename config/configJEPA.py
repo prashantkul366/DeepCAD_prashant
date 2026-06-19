@@ -71,6 +71,7 @@ class ConfigJEPA:
         self.mask_ratio       = 0.40    # block and group level
         self.mask_ratio_token = 0.50    # token level (higher for single-block seqs)
         self.n_mask_groups    = 2
+        
 
     def _parse(self):
         parser = argparse.ArgumentParser()
@@ -107,5 +108,6 @@ class ConfigJEPA:
                             dest='cont', action='store_true')
         parser.add_argument('--ckpt',
                             type=str, default='latest')
+        parser.add_argument('--seed', type=int, default=42)
         args = parser.parse_args()
         return parser, args
