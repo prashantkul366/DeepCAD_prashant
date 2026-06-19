@@ -476,6 +476,8 @@ class TrainerJEPA:
             if epoch % cfg.val_frequency == 0:
                 val_loss = self._val_epoch(val_loader)
 
+                
+
             lr_now = self.optimizer.param_groups[0]['lr']
             val_str = f'{val_loss:.5f}' if val_loss is not None else '-------'
             msg = (f'ep={epoch:04d}  train={train_loss:.5f}  '
