@@ -7,7 +7,7 @@ from tqdm import tqdm
 
 from model.jepa_encoder import JEPAEncoder
 from model.ema_target import EMATargetEncoder
-from model.predictor import CADJEPAPredictor, HierarchicalPredictor, JEPAPredictor
+from model.predictor import CADJEPAPredictor, HierarchicalPredictor
 from model.masker import get_masker
 from model.model_utils import _get_key_padding_mask
 from model.collapse_monitor import CollapseMonitor
@@ -35,22 +35,22 @@ class TrainerJEPA:
     # ──────────────────────────────────────────────────────────
 
     def _build_models(self):
-        cfg = self.cfg
+        cfg         = self.cfg
+        max_seq_len = getattr(cfg, 'max_seq_len', cfg.max_total_len)
+
         self.encoder = JEPAEncoder(cfg).cuda()
         self.ema     = EMATargetEncoder(self.encoder, decay=cfg.ema_decay)
         self.ema.encoder = self.ema.encoder.cuda()
 
-        max_seq_len = getattr(cfg, 'max_seq_len', cfg.max_total_len)
         pred_kw = dict(
             d_model        = cfg.d_model,
             pred_dim       = cfg.pred_dim,
             n_layers       = cfg.pred_depth,
             n_heads        = cfg.pred_heads,
             dim_feedforward= cfg.pred_ffn_dim,
-            dropout        = 0.0,       # no dropout in predictor — deterministic
+            dropout        = 0.0,
             max_seq_len    = max_seq_len,
         )
-
         if self.is_hierarchical:
             self.predictor = HierarchicalPredictor(**pred_kw).cuda()
         else:
@@ -63,9 +63,9 @@ class TrainerJEPA:
 
     def _build_optimizer(self):
         """
-        Weight decay exclusion — standard transformer training practice.
-        1D parameters (bias, norm scale/bias) and embeddings: no decay.
-        All other weight matrices: weight_decay=0.05.
+        Weight decay exclusion — standard transformer training.
+        1D params, biases, norms, embeddings: no decay.
+        Weight matrices: weight_decay=0.05.
         """
         decay, no_decay = [], []
         seen = set()
@@ -76,13 +76,13 @@ class TrainerJEPA:
                 continue
             seen.add(id(param))
 
-            if (param.ndim <= 1 or       # bias, LayerNorm scale/bias
-                'bias'             in name or
-                'norm'             in name or
-                'embedding'        in name or
-                'embed'            in name or
-                'position_queries' in name or
-                'mask_embedding'   in name):
+            if (param.ndim <= 1 or
+                    'bias'             in name or
+                    'norm'             in name or
+                    'embedding'        in name or
+                    'embed'            in name or
+                    'position_queries' in name or
+                    'mask_embedding'   in name):
                 no_decay.append(param)
             else:
                 decay.append(param)
@@ -129,15 +129,15 @@ class TrainerJEPA:
     def _load_monitor_sample(self, n=512):
         class _Cfg:
             pass
-        c              = _Cfg()
-        c.data_root    = self.cfg.data_root
-        c.batch_size   = n
-        c.num_workers  = 0
-        c.augment      = False
-        c.max_n_loops  = self.cfg.max_n_loops
-        c.max_n_curves = self.cfg.max_n_curves
+        c               = _Cfg()
+        c.data_root     = self.cfg.data_root
+        c.batch_size    = n
+        c.num_workers   = 0
+        c.augment       = False
+        c.max_n_loops   = self.cfg.max_n_loops
+        c.max_n_curves  = self.cfg.max_n_curves
         c.max_total_len = self.cfg.max_total_len
-        c.max_n_ext    = self.cfg.max_n_ext
+        c.max_n_ext     = self.cfg.max_n_ext
 
         loader = get_dataloader('validation', c, shuffle=True)
         batch  = next(iter(loader))
@@ -152,15 +152,15 @@ class TrainerJEPA:
     @staticmethod
     def _extract_masked_indices(target_mask):
         """
-        Extract padded masked position indices from a boolean mask.
+        Extract padded masked position indices from boolean mask.
 
-        target_mask: (N, S) bool — True at masked positions
+        target_mask: (N, S) bool
         Returns:
-            padded: (N, max_n) long — indices padded to max_n (last real index repeated)
+            padded: (N, max_n) long — indices padded with last real index
             n_real: (N,) long       — actual masked count per sequence
         """
         N      = target_mask.shape[0]
-        n_real = target_mask.sum(dim=1)              # (N,)
+        n_real = target_mask.sum(dim=1)
         max_n  = int(n_real.max().item())
 
         if max_n == 0:
@@ -174,7 +174,7 @@ class TrainerJEPA:
             if n > 0:
                 padded[i, :n] = indices
                 if n < max_n:
-                    padded[i, n:] = indices[-1]   # repeat last for padding
+                    padded[i, n:] = indices[-1]
 
         return padded, n_real
 
@@ -186,14 +186,14 @@ class TrainerJEPA:
         """
         Full VICReg (variance + covariance) on per-token context embeddings.
 
-        Applied to non-masked, non-EOS tokens — the actual context tokens
-        with real content (not mask_embedding positions, not padding).
+        Applied to non-masked, non-EOS tokens — true context tokens with
+        real content. Not applied to mask_embedding positions or padding.
 
-        Variance term: forces each embedding dimension to have std >= 1
-                       across the batch of context tokens.
-        Covariance term: forces different embedding dimensions to be
-                         uncorrelated — critical on homogeneous CAD data
-                         to ensure different dims encode different properties.
+        Variance: each dim has std >= 1 across context token batch.
+                  Prevents all dims from collapsing to zero.
+        Covariance: different dims encode different information.
+                    Critical on homogeneous CAD data — forces the encoder
+                    to use all dimensions rather than collapsing to a few.
 
         ctx_emb_sf:  (S, N, d) seq-first
         commands:    (N, S) batch-first long
@@ -201,7 +201,7 @@ class TrainerJEPA:
         """
         is_eos    = (commands.permute(1, 0) == EOS_IDX)  # (S, N)
         is_masked = target_mask.permute(1, 0)            # (S, N)
-        valid     = ~is_eos & ~is_masked                 # (S, N)
+        valid     = (~is_eos & ~is_masked)               # (S, N) bool
 
         z = ctx_emb_sf.float()[valid]                    # (n_valid, d)
 
@@ -209,14 +209,14 @@ class TrainerJEPA:
             return torch.tensor(0.0, device=ctx_emb_sf.device)
 
         n, d = z.shape
-        z    = z - z.mean(dim=0, keepdim=True)           # center per-dimension
+        z    = z - z.mean(dim=0, keepdim=True)
 
-        # Variance: each dim should have std >= 1
+        # Variance term: each dim should have std >= 1
         std    = torch.sqrt(z.var(dim=0) + 1e-4)
         v_loss = F.relu(1.0 - std).mean()
 
-        # Covariance: off-diagonal elements should be near zero
-        cov      = (z.T @ z) / max(n - 1, 1)            # (d, d)
+        # Covariance term: off-diagonal elements near zero
+        cov      = (z.T @ z) / max(n - 1, 1)
         off_diag = cov.pow(2)
         off_diag.fill_diagonal_(0.0)
         c_loss   = off_diag.sum() / d
@@ -242,8 +242,9 @@ class TrainerJEPA:
             return torch.tensor(0.0, device='cuda', requires_grad=True)
 
         # ── Context encoder ──────────────────────────────────
-        # Returns (S, N, d_model) seq-first
-        ctx_emb = self.encoder(commands, args, target_mask=target_mask)
+        # Masked positions receive mask_embedding (not original content)
+        # before the transformer. No content leakage at this step.
+        ctx_emb = self.encoder(commands, args, target_mask=target_mask)  # (S, N, d)
 
         # ── EMA target encoder (no grad) ─────────────────────
         with torch.no_grad():
@@ -253,17 +254,29 @@ class TrainerJEPA:
         commands_sf      = commands.permute(1, 0)
         key_padding_mask = _get_key_padding_mask(commands_sf, seq_dim=0)  # (N, S)
 
+        # ── Strict I-JEPA: zero out masked positions in context ──────────
+        # Even though masked positions contain mask_embedding (not real content),
+        # the encoder's self-attention has propagated context-informed information
+        # into those positions. Zeroing them out ensures the predictor can ONLY
+        # attend to true context positions — making the prediction task strictly
+        # analogous to I-JEPA's design.
+        mask_sf       = target_mask.permute(1, 0).unsqueeze(-1)  # (S, N, 1)
+        ctx_for_pred  = ctx_emb.masked_fill(mask_sf, 0.0)        # (S, N, d)
+
         # ── Prediction loss ──────────────────────────────────
         if self.is_hierarchical:
             pred_loss = self._hierarchical_loss(
-                ctx_emb, full_emb, target_mask, key_padding_mask, level_per_seq
+                ctx_emb, ctx_for_pred, full_emb,
+                target_mask, key_padding_mask, level_per_seq
             )
         else:
             pred_loss = self._single_level_loss(
-                ctx_emb, full_emb, target_mask, key_padding_mask
+                ctx_for_pred, full_emb, target_mask, key_padding_mask
             )
 
         # ── VICReg regularization ────────────────────────────
+        # Applied to ctx_emb (not ctx_for_pred) — we want to regularize
+        # the actual encoder representations, not the zeroed version
         if compute_vicreg and (self.vicreg_lambda_v > 0 or
                                 self.vicreg_lambda_c > 0):
             vicreg = self._vicreg_loss(ctx_emb, commands, target_mask)
@@ -273,29 +286,32 @@ class TrainerJEPA:
 
         return loss
 
-    def _single_level_loss(self, ctx_emb, full_emb, target_mask, key_padding_mask):
-        """Prediction loss for non-hierarchical maskers."""
+    def _single_level_loss(self, ctx_for_pred, full_emb,
+                            target_mask, key_padding_mask):
+        """
+        Prediction loss using cross-attention predictor.
+        ctx_for_pred: (S, N, d) — encoder output with target positions zeroed
+        """
         padded, n_real = self._extract_masked_indices(target_mask)
-
         if padded is None:
             return torch.tensor(0.0, device='cuda', requires_grad=True)
 
-        # Cross-attention predictor: queries at target positions attend to context
+        # Cross-attention: position queries attend to zeroed context
         pred_sf = self.predictor(
-            ctx_emb, padded, key_padding_mask, n_real
+            ctx_for_pred, padded, key_padding_mask, n_real
         )  # (max_n, N, d)
 
-        # Gather EMA targets at padded positions
-        full_bf  = full_emb.permute(1, 0, 2)          # (N, S, d)
-        pad_exp  = padded.unsqueeze(-1).expand(-1, -1, self.cfg.d_model)
-        true_bf  = full_bf.gather(1, pad_exp)          # (N, max_n, d)
-        true_sf  = true_bf.permute(1, 0, 2)            # (max_n, N, d)
+        # Gather EMA targets at masked positions
+        full_bf = full_emb.permute(1, 0, 2)                          # (N, S, d)
+        pad_exp = padded.unsqueeze(-1).expand(-1, -1, self.cfg.d_model)
+        true_bf = full_bf.gather(1, pad_exp)                          # (N, max_n, d)
+        true_sf = true_bf.permute(1, 0, 2)                            # (max_n, N, d)
 
-        # Valid positions only (exclude padded)
+        # Valid positions only (exclude padded duplicates)
         max_n    = padded.shape[1]
         valid    = (torch.arange(max_n, device='cuda').unsqueeze(0)
-                    < n_real.unsqueeze(1))              # (N, max_n)
-        valid_sf = valid.permute(1, 0)                  # (max_n, N)
+                    < n_real.unsqueeze(1))   # (N, max_n)
+        valid_sf = valid.permute(1, 0)       # (max_n, N)
 
         pred_v = pred_sf[valid_sf].float()
         true_v = true_sf[valid_sf].float()
@@ -304,11 +320,17 @@ class TrainerJEPA:
             pred_v = F.normalize(pred_v, dim=-1)
             true_v = F.normalize(true_v, dim=-1)
 
-        return F.smooth_l1_loss(pred_v, true_v.detach())
+        # beta=0.5: more L1-like in 0-1 range, less sensitive to large
+        # errors in early training when encoder is still random
+        return F.smooth_l1_loss(pred_v, true_v.detach(), beta=0.5)
 
-    def _hierarchical_loss(self, ctx_emb, full_emb, target_mask,
-                            key_padding_mask, level_per_seq):
-        """Prediction loss for hierarchical masker — routes by level."""
+    def _hierarchical_loss(self, ctx_emb, ctx_for_pred, full_emb,
+                            target_mask, key_padding_mask, level_per_seq):
+        """
+        Prediction loss for hierarchical masker — routes by level.
+        ctx_emb:      original encoder output (for VICReg, not used here)
+        ctx_for_pred: encoder output with target positions zeroed (for predictor)
+        """
         losses = []
 
         for level in ['token', 'block', 'group']:
@@ -317,10 +339,12 @@ class TrainerJEPA:
                 continue
 
             idx_t   = torch.tensor(idx, device='cuda')
-            ctx_lv  = ctx_emb[:, idx_t, :]        # (S, n_lv, d)
-            full_lv = full_emb[:, idx_t, :]       # (S, n_lv, d)
-            mask_lv = target_mask[idx_t, :]       # (n_lv, S)
-            kpm_lv  = key_padding_mask[idx_t, :]  # (n_lv, S)
+
+            # Slice this level's sequences
+            ctx_lv  = ctx_for_pred[:, idx_t, :]    # (S, n_lv, d) — already zeroed
+            full_lv = full_emb[:, idx_t, :]         # (S, n_lv, d)
+            mask_lv = target_mask[idx_t, :]         # (n_lv, S)
+            kpm_lv  = key_padding_mask[idx_t, :]    # (n_lv, S)
 
             padded_lv, n_real_lv = self._extract_masked_indices(mask_lv)
             if padded_lv is None:
@@ -331,15 +355,15 @@ class TrainerJEPA:
             )  # (max_n, n_lv, d)
 
             # Gather EMA targets
-            full_bf = full_lv.permute(1, 0, 2)    # (n_lv, S, d)
+            full_bf = full_lv.permute(1, 0, 2)
             pad_exp = padded_lv.unsqueeze(-1).expand(-1, -1, self.cfg.d_model)
-            true_bf = full_bf.gather(1, pad_exp)   # (n_lv, max_n, d)
-            true_sf = true_bf.permute(1, 0, 2)     # (max_n, n_lv, d)
+            true_bf = full_bf.gather(1, pad_exp)
+            true_sf = true_bf.permute(1, 0, 2)
 
             max_n    = padded_lv.shape[1]
             valid    = (torch.arange(max_n, device='cuda').unsqueeze(0)
-                        < n_real_lv.unsqueeze(1))   # (n_lv, max_n)
-            valid_sf = valid.permute(1, 0)           # (max_n, n_lv)
+                        < n_real_lv.unsqueeze(1))
+            valid_sf = valid.permute(1, 0)
 
             pred_v = pred_sf[valid_sf].float()
             true_v = true_sf[valid_sf].float()
@@ -349,7 +373,9 @@ class TrainerJEPA:
                 true_v = F.normalize(true_v, dim=-1)
 
             if pred_v.shape[0] > 0:
-                losses.append(F.smooth_l1_loss(pred_v, true_v.detach()))
+                losses.append(
+                    F.smooth_l1_loss(pred_v, true_v.detach(), beta=0.5)
+                )
 
         if not losses:
             return torch.tensor(0.0, device='cuda', requires_grad=True)
@@ -388,7 +414,7 @@ class TrainerJEPA:
 
     @torch.no_grad()
     def _val_epoch(self, loader):
-        """Validation: prediction loss only — no VICReg."""
+        """Validation: prediction loss only, no VICReg."""
         self.encoder.eval()
         self.predictor.eval()
         losses = []

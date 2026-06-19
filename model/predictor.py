@@ -6,7 +6,7 @@ from model.layers.improved_transformer import (
     TransformerDecoderLayerImproved
 )
 from model.layers.transformer import TransformerEncoder, TransformerDecoder
-
+# import torch.nn as nn
 
 class JEPAPredictor(nn.Module):
     """
