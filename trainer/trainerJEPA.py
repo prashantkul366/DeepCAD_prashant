@@ -1,3 +1,4 @@
+# %%writefile /content/DeepCAD_prashant/trainer/trainerJEPA.py
 import os
 import numpy as np
 import torch
@@ -11,22 +12,20 @@ from model.predictor import JEPAPredictor, HierarchicalPredictor
 from model.masker import get_masker
 from model.model_utils import _get_key_padding_mask
 from dataset.cad_dataset import get_dataloader
-from utils import ensure_dirs
 
 
 class TrainerJEPA:
     def __init__(self, cfg):
-        self.cfg = cfg
-        self.global_step = 0
-        self.is_hierarchical = (cfg.masking_strategy == 'hierarchical')
-
+        self.cfg              = cfg
+        self.global_step      = 0
+        self.is_hierarchical  = (cfg.masking_strategy == 'hierarchical')
         self._build_models()
         self._build_optimizer()
         self.masker = get_masker(cfg.masking_strategy, cfg)
 
-    # ──────────────────────────────────────────
+    # ──────────────────────────────────────────────────────────
     #  Build
-    # ──────────────────────────────────────────
+    # ──────────────────────────────────────────────────────────
 
     def _build_models(self):
         cfg = self.cfg
@@ -48,12 +47,17 @@ class TrainerJEPA:
         else:
             self.predictor = JEPAPredictor(**pred_kwargs).cuda()
 
+        n_enc  = sum(p.numel() for p in self.encoder.parameters())
+        n_pred = sum(p.numel() for p in self.predictor.parameters())
+        print(f"  Encoder params : {n_enc/1e6:.2f}M")
+        print(f"  Predictor params: {n_pred/1e6:.2f}M")
+
     def _build_optimizer(self):
-        cfg = self.cfg
-        params = list(self.encoder.parameters()) + list(self.predictor.parameters())
-        self.optimizer = torch.optim.AdamW(params, lr=cfg.lr, weight_decay=0.05,
-                                           betas=(0.9, 0.95))
-        # Scheduler set after total_steps is known
+        params = (list(self.encoder.parameters()) +
+                  list(self.predictor.parameters()))
+        self.optimizer = torch.optim.AdamW(
+            params, lr=self.cfg.lr, weight_decay=0.05, betas=(0.9, 0.95)
+        )
         self.scheduler = None
 
     def _build_scheduler(self, total_steps):
@@ -63,89 +67,122 @@ class TrainerJEPA:
                 return step / max(1, warmup)
             progress = (step - warmup) / max(1, total_steps - warmup)
             return 0.5 * (1.0 + np.cos(np.pi * progress))
-        self.scheduler = torch.optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda)
+        self.scheduler = torch.optim.lr_scheduler.LambdaLR(
+            self.optimizer, lr_lambda
+        )
 
-    # ──────────────────────────────────────────
-    #  Forward step
-    # ──────────────────────────────────────────
+    # ──────────────────────────────────────────────────────────
+    #  EMA update with ramp
+    # ──────────────────────────────────────────────────────────
+
+    def _update_ema(self):
+        # Ramp EMA decay from 0.99 → target over first 1000 steps
+        t     = min(1.0, self.global_step / 1000)
+        decay = 0.99 + (self.cfg.ema_decay - 0.99) * t
+        self.ema.update(self.encoder, decay=decay)
+
+    # ──────────────────────────────────────────────────────────
+    #  Forward
+    # ──────────────────────────────────────────────────────────
 
     def _forward(self, data):
         commands = data['command'].cuda()   # (N, S)
         args     = data['args'].cuda()      # (N, S, n_args)
 
+        # ── Masking ──────────────────────────────────────────
         if self.is_hierarchical:
             target_mask, level_per_seq = self.masker(commands)
-            # For hierarchical: route each sequence to correct predictor head
-            # But since sequences in a batch may have different levels,
-            # we use the MAJORITY level for the predictor head this step.
-            # (All sequences share one forward pass through the encoder.)
-            level = max(set(level_per_seq), key=level_per_seq.count)
         else:
-            target_mask = self.masker(commands)
-            level = None
+            target_mask    = self.masker(commands)
+            level_per_seq  = None
 
         if target_mask.sum() == 0:
             return torch.tensor(0.0, device='cuda', requires_grad=True)
 
-        # 2. Context encoder (sees masked sequence)
-        ctx_emb = self.encoder(commands, args, target_mask=target_mask)  # (S, N, d_model)
+        # ── Context encoder ──────────────────────────────────
+        ctx_emb = self.encoder(commands, args, target_mask=target_mask)  # (S,N,d)
 
-        # 3. EMA target encoder (sees full sequence, no grad)
+        # ── EMA target encoder (no grad) ─────────────────────
         with torch.no_grad():
-            full_emb = self.ema(commands, args)                          # (S, N, d_model)
+            full_emb = self.ema(commands, args)   # (S, N, d)
 
-        # 4. Key padding mask for predictor (based on original commands)
-        commands_sf      = commands.permute(1, 0)                        # (S, N)
-        key_padding_mask = _get_key_padding_mask(commands_sf, seq_dim=0) # (N, S)
+        # ── Key padding mask for predictor ───────────────────
+        commands_sf      = commands.permute(1, 0)                          # (S, N)
+        key_padding_mask = _get_key_padding_mask(commands_sf, seq_dim=0)   # (N, S)
 
-        # 5. Predictor
+        # ── Predict + loss ───────────────────────────────────
         if self.is_hierarchical:
-            pred_all = self.predictor(ctx_emb, level, key_padding_mask)
+            loss = self._hierarchical_loss(
+                ctx_emb, full_emb, target_mask,
+                key_padding_mask, level_per_seq
+            )
         else:
-            pred_all = self.predictor(ctx_emb, key_padding_mask)         # (S, N, d_model)
+            pred_all       = self.predictor(ctx_emb, key_padding_mask)    # (S,N,d)
+            target_sf      = target_mask.permute(1, 0)                    # (S, N)
+            pred_at_target = pred_all[target_sf]
+            true_at_target = full_emb[target_sf]
 
-        # 6. Extract target positions and compute loss
-        target_mask_sf = target_mask.permute(1, 0)   # (S, N)
-        pred_at_target = pred_all[target_mask_sf]    # (n_masked, d_model)
-        true_at_target = full_emb[target_mask_sf]    # (n_masked, d_model)
+            if self.cfg.target_norm:
+                pred_at_target = F.normalize(pred_at_target, dim=-1)
+                true_at_target = F.normalize(true_at_target, dim=-1)
 
-        if self.cfg.target_norm:
-            true_at_target = F.normalize(true_at_target, dim=-1)
-            pred_at_target = F.normalize(pred_at_target, dim=-1)
+            loss = F.smooth_l1_loss(pred_at_target, true_at_target.detach())
 
-        loss = F.smooth_l1_loss(pred_at_target, true_at_target.detach())
         return loss
 
-    # ──────────────────────────────────────────
-    #  EMA update with cosine warmup schedule
-    # ──────────────────────────────────────────
+    def _hierarchical_loss(self, ctx_emb, full_emb, target_mask,
+                           key_padding_mask, level_per_seq):
+        """
+        Route each sequence to its corresponding predictor head,
+        compute per-level loss, average across levels.
+        """
+        losses = []
+        for level in ['token', 'block', 'group']:
+            idx = [i for i, l in enumerate(level_per_seq) if l == level]
+            if not idx:
+                continue
 
-    def _update_ema(self):
-        # EMA decay ramps from 0 → cfg.ema_decay in first 10k steps
-        decay = min(self.cfg.ema_decay,
-                    (1 + self.global_step) / (10 + self.global_step))
-        self.ema.update(self.encoder, decay=decay)
+            idx_t    = torch.tensor(idx, device='cuda')
+            ctx_lv   = ctx_emb[:, idx_t, :]         # (S, n_lv, d)
+            kpm_lv   = key_padding_mask[idx_t, :]   # (n_lv, S)
+            full_lv  = full_emb[:, idx_t, :]        # (S, n_lv, d)
+            mask_lv  = target_mask[idx_t, :]        # (n_lv, S)
 
-    # ──────────────────────────────────────────
+            pred     = self.predictor(ctx_lv, level, kpm_lv)  # (S, n_lv, d)
+
+            mask_sf  = mask_lv.permute(1, 0)         # (S, n_lv)
+            pred_at  = pred[mask_sf]
+            true_at  = full_lv[mask_sf]
+
+            if self.cfg.target_norm:
+                pred_at = F.normalize(pred_at, dim=-1)
+                true_at = F.normalize(true_at, dim=-1)
+
+            losses.append(F.smooth_l1_loss(pred_at, true_at.detach()))
+
+        if not losses:
+            return torch.tensor(0.0, device='cuda', requires_grad=True)
+        return torch.stack(losses).mean()
+
+    # ──────────────────────────────────────────────────────────
     #  Train / val loops
-    # ──────────────────────────────────────────
+    # ──────────────────────────────────────────────────────────
 
     def _train_epoch(self, loader, epoch):
         self.encoder.train()
         self.predictor.train()
         losses = []
+        pbar   = tqdm(loader, desc=f'Ep{epoch:04d}', leave=False)
 
-        pbar = tqdm(loader, desc=f'Train ep{epoch}', leave=False)
         for data in pbar:
             self.optimizer.zero_grad()
             loss = self._forward(data)
             loss.backward()
-
             nn.utils.clip_grad_norm_(
-                list(self.encoder.parameters()) + list(self.predictor.parameters()),
+                list(self.encoder.parameters()) +
+                list(self.predictor.parameters()),
                 self.cfg.grad_clip
             )
-
             self.optimizer.step()
             if self.scheduler:
                 self.scheduler.step()
@@ -153,9 +190,9 @@ class TrainerJEPA:
 
             self.global_step += 1
             losses.append(loss.item())
-            pbar.set_postfix(loss=f'{loss.item():.4f}')
+            pbar.set_postfix(loss=f'{loss.item():.5f}')
 
-        return np.mean(losses)
+        return float(np.mean(losses))
 
     @torch.no_grad()
     def _val_epoch(self, loader):
@@ -164,24 +201,24 @@ class TrainerJEPA:
         losses = []
         for data in tqdm(loader, desc='Val', leave=False):
             losses.append(self._forward(data).item())
-        return np.mean(losses)
+        return float(np.mean(losses))
 
-    # ──────────────────────────────────────────
+    # ──────────────────────────────────────────────────────────
     #  Checkpoint
-    # ──────────────────────────────────────────
+    # ──────────────────────────────────────────────────────────
 
     def save_ckpt(self, epoch, tag=None):
-        name = tag if tag else f'ckpt_ep{epoch:04d}'
+        name = tag or f'ckpt_ep{epoch:04d}'
         path = os.path.join(self.cfg.model_dir, f'{name}.pt')
         torch.save({
-            'epoch':       epoch,
-            'global_step': self.global_step,
-            'encoder':     self.encoder.state_dict(),
-            'ema_encoder': self.ema.encoder.state_dict(),
-            'predictor':   self.predictor.state_dict(),
-            'optimizer':   self.optimizer.state_dict(),
+            'epoch':        epoch,
+            'global_step':  self.global_step,
+            'encoder':      self.encoder.state_dict(),
+            'ema_encoder':  self.ema.encoder.state_dict(),
+            'predictor':    self.predictor.state_dict(),
+            'optimizer':    self.optimizer.state_dict(),
         }, path)
-        print(f'  Saved: {path}')
+        return path
 
     def load_ckpt(self, path):
         ckpt = torch.load(path, map_location='cuda')
@@ -192,25 +229,26 @@ class TrainerJEPA:
         self.global_step = ckpt.get('global_step', 0)
         return ckpt['epoch']
 
-    # ──────────────────────────────────────────
+    # ──────────────────────────────────────────────────────────
     #  Main train loop
-    # ──────────────────────────────────────────
+    # ──────────────────────────────────────────────────────────
 
     def train(self):
-        cfg = self.cfg
+        cfg          = self.cfg
         train_loader = get_dataloader('train',      cfg)
         val_loader   = get_dataloader('validation', cfg)
 
-        total_steps = cfg.nr_epochs * len(train_loader)
+        total_steps  = cfg.nr_epochs * len(train_loader)
         self._build_scheduler(total_steps)
 
         start_epoch = 0
         if cfg.cont:
-            ckpt_path = os.path.join(cfg.model_dir, f'{cfg.ckpt}.pt')
+            ckpt_path   = os.path.join(cfg.model_dir, f'{cfg.ckpt}.pt')
             start_epoch = self.load_ckpt(ckpt_path) + 1
             print(f'Resumed from epoch {start_epoch}')
 
         log_path = os.path.join(cfg.log_dir, 'losses.txt')
+        best_val = float('inf')
 
         for epoch in range(start_epoch, cfg.nr_epochs):
             train_loss = self._train_epoch(train_loader, epoch)
@@ -219,15 +257,19 @@ class TrainerJEPA:
             if epoch % cfg.val_frequency == 0:
                 val_loss = self._val_epoch(val_loader)
 
-            msg = f'[ep {epoch:04d}] train={train_loss:.5f}  val={val_loss:.5f}'
+            lr_now = self.optimizer.param_groups[0]['lr']
+            msg = (f'ep={epoch:04d}  train={train_loss:.5f}  '
+                   f'val={val_loss:.5f}  lr={lr_now:.2e}  '
+                   f'step={self.global_step}')
             print(msg)
             with open(log_path, 'a') as f:
                 f.write(msg + '\n')
 
-            # Save every save_frequency epochs (for pretraining dynamics curve)
+            # Save every save_frequency epochs (needed for pretraining dynamics)
             if epoch % cfg.save_frequency == 0 or epoch == cfg.nr_epochs - 1:
                 self.save_ckpt(epoch)
 
+            # Always save latest (for resume)
             self.save_ckpt(epoch, tag='latest')
 
-        print('Training done.')
+        print('Training complete.')
