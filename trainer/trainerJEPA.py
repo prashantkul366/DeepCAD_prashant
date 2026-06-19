@@ -194,9 +194,17 @@ class TrainerJEPA:
             pred_at  = pred[mask_sf]
             true_at  = full_lv[mask_sf]
 
+            # if self.cfg.target_norm:
+            #     pred_at = F.normalize(pred_at, dim=-1)
+            #     true_at = F.normalize(true_at, dim=-1)
+
+            # losses.append(F.smooth_l1_loss(pred_at, true_at.detach()))
             if self.cfg.target_norm:
-                pred_at = F.normalize(pred_at, dim=-1)
-                true_at = F.normalize(true_at, dim=-1)
+                pred_at = F.normalize(pred_at.float(), dim=-1)
+                true_at = F.normalize(true_at.float(), dim=-1)
+            else:
+                pred_at = pred_at.float()
+                true_at = true_at.float()
 
             losses.append(F.smooth_l1_loss(pred_at, true_at.detach()))
 

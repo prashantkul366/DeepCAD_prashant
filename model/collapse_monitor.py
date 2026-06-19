@@ -32,7 +32,8 @@ class CollapseMonitor:
         s2       = s ** 2
         cumvar   = torch.cumsum(s2 / s2.sum(), dim=0)
         rank     = int((cumvar < 0.99).sum().item()) + 1
-        self._last_rank = rank / self._d_model
+        # self._last_rank = rank / self._d_model
+        self._last_rank = rank / q   # fraction of measurable components
         return self._last_rank
 
     def is_collapsing(self):
