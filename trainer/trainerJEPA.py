@@ -24,6 +24,8 @@ class TrainerJEPA:
         self._build_optimizer()
         self.masker = get_masker(cfg.masking_strategy, cfg)
         self.monitor = CollapseMonitor(cfg.d_model, rank_threshold=0.70)
+        self._max_rank_seen = 0.0
+        self._rank_burn_in  = 20   # don't warn before epoch 20
         self._load_monitor_sample()
 
     # ──────────────────────────────────────────────────────────
@@ -316,16 +318,26 @@ class TrainerJEPA:
                 f.write(msg + '\n')
 
             # ── Rank monitoring (epoch level) ──────────────────
-            rank       = self.monitor.compute_rank(
+            rank = self.monitor.compute_rank(
                 self.ema.encoder, self.monitor_cmds, self.monitor_args
             )
-            collapsing = self.monitor.is_collapsing()
-            rank_msg   = f'  rank={rank:.3f}  collapse={"⚠ YES" if collapsing else "no"}'
+            self._max_rank_seen = max(self._max_rank_seen, rank)
+            # Relative collapse: rank drops below 50% of best seen, after burn-in
+            collapsing = (
+                epoch >= self._rank_burn_in and
+                self._max_rank_seen > 0 and
+                rank < 0.50 * self._max_rank_seen
+            )
+            rank_msg = (f'  rank={rank:.3f}  '
+                        f'max={self._max_rank_seen:.3f}  '
+                        f'collapse={"⚠ YES" if collapsing else "no"}')
             print(rank_msg)
             with open(log_path, 'a') as f:
                 f.write(rank_msg + '\n')
             if collapsing:
-                print(f'  *** COLLAPSE WARNING ep={epoch} rank={rank:.3f} < {self.monitor._threshold} ***')
+                print(f'  *** COLLAPSE WARNING ep={epoch} '
+                      f'rank={rank:.3f} dropped below '
+                      f'50% of max={self._max_rank_seen:.3f} ***')
 
 
             # Save every save_frequency epochs (needed for pretraining dynamics)
