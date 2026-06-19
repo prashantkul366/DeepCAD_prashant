@@ -32,7 +32,7 @@ class JEPAEncoder(nn.Module):
         self.encoder = TransformerEncoder(
             enc_layer, cfg.n_layers, LayerNorm(cfg.d_model)
         )
-
+        self.output_norm = nn.LayerNorm(cfg.d_model)
         # Learned mask token — replaces content at masked positions
         self.mask_embedding = nn.Parameter(torch.zeros(cfg.d_model))
         nn.init.trunc_normal_(self.mask_embedding, std=0.02)
@@ -65,7 +65,8 @@ class JEPAEncoder(nn.Module):
             src = torch.where(mask_sf, mask_emb, src)
 
         memory = self.encoder(src, mask=None, src_key_padding_mask=key_padding_mask)
-        return memory  # (S, N, d_model)
+        # return memory  # (S, N, d_model)
+        return self.output_norm(memory)  # (S, N, d_model)
 
     @torch.no_grad()
     def get_pooled_embedding(self, commands, args):

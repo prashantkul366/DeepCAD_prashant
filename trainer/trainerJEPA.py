@@ -12,6 +12,7 @@ from model.predictor import JEPAPredictor, HierarchicalPredictor
 from model.masker import get_masker
 from model.model_utils import _get_key_padding_mask
 from dataset.cad_dataset import get_dataloader
+from model.collapse_monitor import CollapseMonitor
 
 
 class TrainerJEPA:
@@ -22,6 +23,8 @@ class TrainerJEPA:
         self._build_models()
         self._build_optimizer()
         self.masker = get_masker(cfg.masking_strategy, cfg)
+        self.monitor = CollapseMonitor(cfg.d_model, rank_threshold=0.70)
+        self._load_monitor_sample()
 
     # ──────────────────────────────────────────────────────────
     #  Build
@@ -81,6 +84,33 @@ class TrainerJEPA:
         decay = 0.99 + (self.cfg.ema_decay - 0.99) * t
         self.ema.update(self.encoder, decay=decay)
 
+    def _load_monitor_sample(self, n=512):
+        """
+        Load a fixed sample of validation sequences for epoch-level rank monitoring.
+        Stored on CPU — moved to GPU only during the rank computation call.
+        Uses batch_size=n to load in one shot.
+        """
+        from dataset.cad_dataset import get_dataloader
+
+        class _Cfg:
+            pass
+        cfg             = _Cfg()
+        cfg.data_root   = self.cfg.data_root
+        cfg.batch_size  = n
+        cfg.num_workers = 0      # no workers — this is a one-time load
+        cfg.augment     = False
+        cfg.max_n_loops  = self.cfg.max_n_loops
+        cfg.max_n_curves = self.cfg.max_n_curves
+        cfg.max_total_len = self.cfg.max_total_len
+        cfg.max_n_ext    = self.cfg.max_n_ext
+
+        loader = get_dataloader('validation', cfg, shuffle=True)
+        batch  = next(iter(loader))
+        self.monitor_cmds = batch['command'][:n]   # (N, 60) long, CPU
+        self.monitor_args = batch['args'][:n]      # (N, 60, 16) long, CPU
+        print(f"  Collapse monitor sample: {self.monitor_cmds.shape[0]} val sequences")
+
+        
     # ──────────────────────────────────────────────────────────
     #  Forward
     # ──────────────────────────────────────────────────────────
@@ -122,9 +152,19 @@ class TrainerJEPA:
             pred_at_target = pred_all[target_sf]
             true_at_target = full_emb[target_sf]
 
+            # if self.cfg.target_norm:
+            #     pred_at_target = F.normalize(pred_at_target, dim=-1)
+            #     true_at_target = F.normalize(true_at_target, dim=-1)
+
+            # loss = F.smooth_l1_loss(pred_at_target, true_at_target.detach())
+
+            # Cast to float32 before loss — critical when autocast (bfloat16) is active
             if self.cfg.target_norm:
-                pred_at_target = F.normalize(pred_at_target, dim=-1)
-                true_at_target = F.normalize(true_at_target, dim=-1)
+                pred_at_target = F.normalize(pred_at_target.float(), dim=-1)
+                true_at_target = F.normalize(true_at_target.float(), dim=-1)
+            else:
+                pred_at_target = pred_at_target.float()
+                true_at_target = true_at_target.float()
 
             loss = F.smooth_l1_loss(pred_at_target, true_at_target.detach())
 
@@ -176,7 +216,9 @@ class TrainerJEPA:
 
         for data in pbar:
             self.optimizer.zero_grad()
-            loss = self._forward(data)
+            # loss = self._forward(data)
+            with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+                loss = self._forward(data)
             loss.backward()
             nn.utils.clip_grad_norm_(
                 list(self.encoder.parameters()) +
@@ -264,6 +306,19 @@ class TrainerJEPA:
             print(msg)
             with open(log_path, 'a') as f:
                 f.write(msg + '\n')
+
+            # ── Rank monitoring (epoch level) ──────────────────
+            rank       = self.monitor.compute_rank(
+                self.ema.encoder, self.monitor_cmds, self.monitor_args
+            )
+            collapsing = self.monitor.is_collapsing()
+            rank_msg   = f'  rank={rank:.3f}  collapse={"⚠ YES" if collapsing else "no"}'
+            print(rank_msg)
+            with open(log_path, 'a') as f:
+                f.write(rank_msg + '\n')
+            if collapsing:
+                print(f'  *** COLLAPSE WARNING ep={epoch} rank={rank:.3f} < {self.monitor._threshold} ***')
+
 
             # Save every save_frequency epochs (needed for pretraining dynamics)
             if epoch % cfg.save_frequency == 0 or epoch == cfg.nr_epochs - 1:
