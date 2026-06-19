@@ -6,6 +6,8 @@ from cadlib.macro import EOS_IDX, SOL_IDX, EXT_IDX, LINE_IDX, ARC_IDX, CIRCLE_ID
 
 SKETCH_CMDS = {LINE_IDX, ARC_IDX, CIRCLE_IDX}
 
+# Alias for backward compatibility
+# HierarchicalMasker = AdaptiveMasker
 
 def find_blocks(cmd_seq):
     """
@@ -208,3 +210,7 @@ def get_masker(strategy, cfg):
         )
     else:
         raise ValueError(f"Unknown masking strategy: {strategy}")
+    
+
+# Alias for backward compatibility
+HierarchicalMasker = AdaptiveMasker
