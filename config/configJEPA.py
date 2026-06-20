@@ -115,7 +115,6 @@ class ConfigJEPA:
         parser.add_argument('--continue',          dest='cont', action='store_true')
         parser.add_argument('--ckpt',              type=str,   default='latest')
         parser.add_argument('--seed',              type=int,   default=42)
-        parser.add_argument('--seed',              type=int,   default=42)
         parser.add_argument('--use_cls',           action='store_true', default=False)
         parser.add_argument('--loss_type',         type=str,   default='smooth_l1',
                             choices=['smooth_l1', 'infonce'])
