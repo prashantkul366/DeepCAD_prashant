@@ -90,6 +90,11 @@ class ConfigJEPA:
         self.vicreg_lambda_v  = 1.0
         self.vicreg_lambda_c  = 0.04
 
+        # ── Experiment flags ─────────────────────────────────
+        self.use_cls        = False        # CLS token pooling vs mean pool
+        self.loss_type      = 'smooth_l1'  # 'smooth_l1' | 'infonce'
+        self.n_mask_targets = 1            # blocks to mask (1=standard, 4=multi-target)
+
     def _parse(self):
         parser = argparse.ArgumentParser()
         parser.add_argument('--proj_dir',         type=str,   default='proj_log')
@@ -110,5 +115,10 @@ class ConfigJEPA:
         parser.add_argument('--continue',          dest='cont', action='store_true')
         parser.add_argument('--ckpt',              type=str,   default='latest')
         parser.add_argument('--seed',              type=int,   default=42)
+        parser.add_argument('--seed',              type=int,   default=42)
+        parser.add_argument('--use_cls',           action='store_true', default=False)
+        parser.add_argument('--loss_type',         type=str,   default='smooth_l1',
+                            choices=['smooth_l1', 'infonce'])
+        parser.add_argument('--n_mask_targets',    type=int,   default=1)
         args = parser.parse_args()
         return parser, args

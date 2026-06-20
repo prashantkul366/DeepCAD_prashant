@@ -42,13 +42,27 @@ def _apply_token_masking(cmd_np_i, mask_i, mask_ratio=0.50):
         mask_i[pos] = True
 
 
-def _apply_block_masking(blocks, mask_i, mask_ratio=0.40):
+# def _apply_block_masking(blocks, mask_i, mask_ratio=0.40):
+#     """
+#     Mask complete SOL...Ext blocks. Keeps at least one block as context.
+#     Caller guarantees len(blocks) >= 2.
+#     """
+#     n_blocks = len(blocks)
+#     n_mask   = max(1, min(int(np.ceil(n_blocks * mask_ratio)), n_blocks - 1))
+#     for idx in random.sample(range(n_blocks), n_mask):
+#         s, e = blocks[idx]
+#         mask_i[s:e + 1] = True
+
+def _apply_block_masking(blocks, mask_i, mask_ratio=0.40, n_targets=1):
     """
     Mask complete SOL...Ext blocks. Keeps at least one block as context.
-    Caller guarantees len(blocks) >= 2.
+    n_targets > 1: multi-target mode — mask exactly min(n_targets, n_blocks-1) blocks.
     """
     n_blocks = len(blocks)
-    n_mask   = max(1, min(int(np.ceil(n_blocks * mask_ratio)), n_blocks - 1))
+    if n_targets > 1:
+        n_mask = max(1, min(n_targets, n_blocks - 1))
+    else:
+        n_mask = max(1, min(int(np.ceil(n_blocks * mask_ratio)), n_blocks - 1))
     for idx in random.sample(range(n_blocks), n_mask):
         s, e = blocks[idx]
         mask_i[s:e + 1] = True
@@ -85,9 +99,10 @@ class OperationBlockMasker:
     Block masking with token fallback for single-block sequences.
     Single-block → token masking (block masking impossible without losing all context)
     """
-    def __init__(self, mask_ratio=0.40, mask_ratio_token=0.50):
+    def __init__(self, mask_ratio=0.40, mask_ratio_token=0.50, n_targets=1):
         self.mask_ratio       = mask_ratio
         self.mask_ratio_token = mask_ratio_token
+        self.n_targets        = n_targets
 
     def __call__(self, commands):
         N, S    = commands.shape
@@ -96,7 +111,7 @@ class OperationBlockMasker:
         for i in range(N):
             blocks = find_blocks(cmd_np[i])
             if len(blocks) >= 2:
-                _apply_block_masking(blocks, mask_np[i], self.mask_ratio)
+                _apply_block_masking(blocks, mask_np[i], self.mask_ratio, self.n_targets)
             else:
                 _apply_token_masking(cmd_np[i], mask_np[i], self.mask_ratio_token)
         return torch.from_numpy(mask_np).to(commands.device)
@@ -139,10 +154,11 @@ class AdaptiveMasker:
 
     Returns (target_mask [N,S bool], level_per_seq [list of str])
     """
-    def __init__(self, mask_ratio=0.40, mask_ratio_token=0.50, n_groups=2):
+    def __init__(self, mask_ratio=0.40, mask_ratio_token=0.50, n_groups=2, n_targets=1):
         self.mask_ratio       = mask_ratio
         self.mask_ratio_token = mask_ratio_token
         self.n_groups         = n_groups
+        self.n_targets        = n_targets
 
     def __call__(self, commands):
         N, S          = commands.shape
@@ -172,14 +188,14 @@ class AdaptiveMasker:
                 _apply_token_masking(cmd_np[i], mask_np[i], self.mask_ratio_token)
             elif level == 'block':
                 if n_blocks >= 2:
-                    _apply_block_masking(blocks, mask_np[i], self.mask_ratio)
+                    _apply_block_masking(blocks, mask_np[i], self.mask_ratio, self.n_targets)
                 else:
                     _apply_token_masking(cmd_np[i], mask_np[i], self.mask_ratio_token)
             elif level == 'group':
                 if n_blocks >= self.n_groups + 1:
                     _apply_group_masking(blocks, mask_np[i], self.n_groups)
                 elif n_blocks >= 2:
-                    _apply_block_masking(blocks, mask_np[i], self.mask_ratio)
+                    _apply_block_masking(blocks, mask_np[i], self.mask_ratio, self.n_targets)
                 else:
                     _apply_token_masking(cmd_np[i], mask_np[i], self.mask_ratio_token)
 
@@ -192,11 +208,14 @@ def get_masker(strategy, cfg):
     blk_ratio = getattr(cfg, 'mask_ratio',       0.40)
     n_groups  = getattr(cfg, 'n_mask_groups',     2)
 
+    n_targets = getattr(cfg, 'n_mask_targets', 1)
+
     if strategy == 'token':
         return TokenLevelMasker(mask_ratio=tok_ratio)
     elif strategy == 'block':
         return OperationBlockMasker(
-            mask_ratio=blk_ratio, mask_ratio_token=tok_ratio
+            mask_ratio=blk_ratio, mask_ratio_token=tok_ratio,
+            n_targets=n_targets
         )
     elif strategy == 'group':
         return GroupLevelMasker(
@@ -206,7 +225,7 @@ def get_masker(strategy, cfg):
     elif strategy == 'hierarchical':
         return AdaptiveMasker(
             mask_ratio=blk_ratio, mask_ratio_token=tok_ratio,
-            n_groups=n_groups
+            n_groups=n_groups, n_targets=n_targets
         )
     else:
         raise ValueError(f"Unknown masking strategy: {strategy}")

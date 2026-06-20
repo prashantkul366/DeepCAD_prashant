@@ -14,6 +14,16 @@ from model.collapse_monitor import CollapseMonitor
 from dataset.cad_dataset import get_dataloader
 from cadlib.macro import EOS_IDX
 
+def _info_nce_loss(pred, target, temperature=0.1):
+    """
+    InfoNCE: each prediction must identify its correct target among all in batch.
+    pred, target: (M, D) float — M masked token embeddings.
+    """
+    pred_n   = F.normalize(pred,   dim=-1)
+    target_n = F.normalize(target, dim=-1)
+    logits   = pred_n @ target_n.T / temperature   # (M, M)
+    labels   = torch.arange(len(pred), device=pred.device)
+    return F.cross_entropy(logits, labels)
 
 class TrainerJEPA:
     def __init__(self, cfg):
@@ -82,7 +92,8 @@ class TrainerJEPA:
                     'embedding'        in name or
                     'embed'            in name or
                     'position_queries' in name or
-                    'mask_embedding'   in name):
+                    'mask_embedding'   in name or
+                    'cls_token'        in name):
                 no_decay.append(param)
             else:
                 decay.append(param)
@@ -242,13 +253,11 @@ class TrainerJEPA:
             return torch.tensor(0.0, device='cuda', requires_grad=True)
 
         # ── Context encoder ──────────────────────────────────
-        # Masked positions receive mask_embedding (not original content)
-        # before the transformer. No content leakage at this step.
-        ctx_emb = self.encoder(commands, args, target_mask=target_mask)  # (S, N, d)
+        ctx_emb, _ = self.encoder(commands, args, target_mask=target_mask)  # (S, N, d)
 
         # ── EMA target encoder (no grad) ─────────────────────
         with torch.no_grad():
-            full_emb = self.ema(commands, args)   # (S, N, d)
+            full_emb, _ = self.ema(commands, args)   # (S, N, d)
 
         # ── Key padding mask for predictor ───────────────────
         commands_sf      = commands.permute(1, 0)
@@ -322,6 +331,11 @@ class TrainerJEPA:
 
         # beta=0.5: more L1-like in 0-1 range, less sensitive to large
         # errors in early training when encoder is still random
+        # return F.smooth_l1_loss(pred_v, true_v.detach(), beta=0.5)
+
+        loss_type = getattr(self.cfg, 'loss_type', 'smooth_l1')
+        if loss_type == 'infonce':
+            return _info_nce_loss(pred_v, true_v.detach())
         return F.smooth_l1_loss(pred_v, true_v.detach(), beta=0.5)
 
     def _hierarchical_loss(self, ctx_emb, ctx_for_pred, full_emb,
@@ -372,10 +386,16 @@ class TrainerJEPA:
                 pred_v = F.normalize(pred_v, dim=-1)
                 true_v = F.normalize(true_v, dim=-1)
 
+            # if pred_v.shape[0] > 0:
+            #     losses.append(
+            #         F.smooth_l1_loss(pred_v, true_v.detach(), beta=0.5)
+            #     )
             if pred_v.shape[0] > 0:
-                losses.append(
-                    F.smooth_l1_loss(pred_v, true_v.detach(), beta=0.5)
-                )
+                loss_type = getattr(self.cfg, 'loss_type', 'smooth_l1')
+                if loss_type == 'infonce':
+                    losses.append(_info_nce_loss(pred_v, true_v.detach()))
+                else:
+                    losses.append(F.smooth_l1_loss(pred_v, true_v.detach(), beta=0.5))
 
         if not losses:
             return torch.tensor(0.0, device='cuda', requires_grad=True)

@@ -37,6 +37,12 @@ class JEPAEncoder(nn.Module):
         self.mask_embedding = nn.Parameter(torch.zeros(cfg.d_model))
         nn.init.trunc_normal_(self.mask_embedding, std=0.02)
 
+        # Optional CLS token — prepended to sequence, output used for pooling
+        self.use_cls = getattr(cfg, 'use_cls', False)
+        if self.use_cls:
+            self.cls_token = nn.Parameter(torch.zeros(1, 1, cfg.d_model))
+            nn.init.trunc_normal_(self.cls_token, std=0.02)
+
     def forward(self, commands, args, target_mask=None):
         """
         commands:    (N, S)         long — batch-first from dataloader
@@ -64,19 +70,50 @@ class JEPAEncoder(nn.Module):
             mask_emb = self.mask_embedding.view(1, 1, -1).expand_as(src)
             src = torch.where(mask_sf, mask_emb, src)
 
-        memory = self.encoder(src, mask=None, src_key_padding_mask=key_padding_mask)
-        # return memory  # (S, N, d_model)
-        return self.output_norm(memory)  # (S, N, d_model)
+        # memory = self.encoder(src, mask=None, src_key_padding_mask=key_padding_mask)
+        # # return memory  # (S, N, d_model)
+        # return self.output_norm(memory)  # (S, N, d_model)
+
+        if self.use_cls:
+            cls = self.cls_token.expand(1, src.size(1), -1)        # (1, N, D)
+            src = torch.cat([cls, src], dim=0)                      # (S+1, N, D)
+            if key_padding_mask is not None:
+                cls_pad = torch.zeros(key_padding_mask.size(0), 1,
+                                      dtype=torch.bool, device=src.device)
+                key_padding_mask = torch.cat([cls_pad, key_padding_mask], dim=1)
+            out     = self.encoder(src, mask=None, src_key_padding_mask=key_padding_mask)
+            cls_out = self.output_norm(out[0])    # (N, D)
+            memory  = self.output_norm(out[1:])   # (S, N, D)
+        else:
+            out     = self.encoder(src, mask=None, src_key_padding_mask=key_padding_mask)
+            memory  = self.output_norm(out)        # (S, N, D)
+            cls_out = None
+        return memory, cls_out
+
+    # @torch.no_grad()
+    # def get_pooled_embedding(self, commands, args):
+    #     """
+    #     Downstream evaluation: mean pool over non-padding positions.
+    #     commands: (N, S) long, args: (N, S, n_args) long
+    #     Returns:  (N, d_model)
+    #     """
+    #     commands_sf  = commands.permute(1, 0)           # (S, N)
+    #     memory       = self.forward(commands, args)      # (S, N, d_model) no mask
+    #     padding_mask = _get_padding_mask(commands_sf, seq_dim=0)  # (S, N, 1)
+    #     z = (memory * padding_mask).sum(dim=0) / padding_mask.sum(dim=0).clamp(min=1)
+    #     return z  # (N, d_model)
 
     @torch.no_grad()
     def get_pooled_embedding(self, commands, args):
         """
-        Downstream evaluation: mean pool over non-padding positions.
+        Downstream evaluation: CLS token (use_cls=True) or mean pool.
         commands: (N, S) long, args: (N, S, n_args) long
         Returns:  (N, d_model)
         """
-        commands_sf  = commands.permute(1, 0)           # (S, N)
-        memory       = self.forward(commands, args)      # (S, N, d_model) no mask
-        padding_mask = _get_padding_mask(commands_sf, seq_dim=0)  # (S, N, 1)
+        commands_sf     = commands.permute(1, 0)
+        memory, cls_out = self.forward(commands, args)
+        if self.use_cls:
+            return cls_out                                          # (N, d_model)
+        padding_mask = _get_padding_mask(commands_sf, seq_dim=0)
         z = (memory * padding_mask).sum(dim=0) / padding_mask.sum(dim=0).clamp(min=1)
-        return z  # (N, d_model)
+        return z                                                    # (N, d_model)
