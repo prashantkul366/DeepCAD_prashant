@@ -178,27 +178,50 @@ class AdaptiveMasker:
             return [1.0 - 0.75*t, 0.75*t, 0.0]
 
     # def __call__(self, commands):
+    # def __call__(self, commands, epoch=0):
+    #     N, S          = commands.shape
+    #     mask_np       = np.zeros((N, S), dtype=bool)
+    #     cmd_np        = commands.cpu().numpy()
+    #     level_per_seq = []
+
+    #     for i in range(N):
+    #         blocks   = find_blocks(cmd_np[i])
+    #         n_blocks = len(blocks)
+
+    #         # Select level per sequence
+    #         if n_blocks == 1:
+    #             level = 'token'
+    #         elif n_blocks == 2:
+    #             level = random.choice(['token', 'block'])
+    #         else:
+    #             level = random.choices(
+    #                 ['token', 'block', 'group'],
+    #                 weights=[0.25, 0.50, 0.25]
+    #             )[0]
     def __call__(self, commands, epoch=0):
         N, S          = commands.shape
         mask_np       = np.zeros((N, S), dtype=bool)
         cmd_np        = commands.cpu().numpy()
         level_per_seq = []
+        tok_w, blk_w, grp_w = self._get_level_weights(epoch)
 
         for i in range(N):
             blocks   = find_blocks(cmd_np[i])
             n_blocks = len(blocks)
 
-            # Select level per sequence
+            # Select level per sequence using curriculum weights
             if n_blocks == 1:
                 level = 'token'
             elif n_blocks == 2:
-                level = random.choice(['token', 'block'])
+                level = random.choices(
+                    ['token', 'block'],
+                    weights=[tok_w + grp_w/2, blk_w + grp_w/2]
+                )[0]
             else:
                 level = random.choices(
                     ['token', 'block', 'group'],
-                    weights=[0.25, 0.50, 0.25]
+                    weights=[tok_w, blk_w, grp_w]
                 )[0]
-
             level_per_seq.append(level)
 
             # Apply masking
