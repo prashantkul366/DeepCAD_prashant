@@ -24,6 +24,9 @@ class ConfigJEPA:
             print(f"  {k:30s} {v}")
             setattr(self, k, v)
 
+        if self.no_group_emb:
+            self.use_group_emb = False
+
         self.exp_dir   = os.path.join(self.proj_dir, self.exp_name)
         self.log_dir   = os.path.join(self.exp_dir, 'log')
         self.model_dir = os.path.join(self.exp_dir, 'model')
@@ -96,6 +99,7 @@ class ConfigJEPA:
         self.n_mask_targets = 1            # blocks to mask (1=standard, 4=multi-target)
         self.curriculum     = False        # curriculum masking schedule
         self.jitter_aug     = False        # parameter jitter augmentation
+        self.no_group_emb     = False   # ablation: remove block-ID embedding
 
     def _parse(self):
         parser = argparse.ArgumentParser()
@@ -123,5 +127,9 @@ class ConfigJEPA:
         parser.add_argument('--n_mask_targets',    type=int,   default=1)
         parser.add_argument('--curriculum',        action='store_true', default=False)
         parser.add_argument('--jitter_aug',        action='store_true', default=False)
+        parser.add_argument('--vicreg_lambda_v',  type=float, default=1.0)
+        parser.add_argument('--vicreg_lambda_c',  type=float, default=0.04)
+        parser.add_argument('--no_group_emb',     action='store_true', default=False)
+        parser.add_argument('--ema_warmup_steps', type=int,   default=5000)
         args = parser.parse_args()
         return parser, args

@@ -127,10 +127,16 @@ class TrainerJEPA:
     #  EMA — gradual ramp over ema_warmup_steps
     # ──────────────────────────────────────────────────────────
 
+    # def _update_ema(self):
+    #     warmup = getattr(self.cfg, 'ema_warmup_steps', 5000)
+    #     t      = min(1.0, self.global_step / warmup)
+    #     decay  = 0.990 + (self.cfg.ema_decay - 0.990) * t
+    #     self.ema.update(self.encoder, decay=decay)
+
     def _update_ema(self):
         warmup = getattr(self.cfg, 'ema_warmup_steps', 5000)
-        t      = min(1.0, self.global_step / warmup)
-        decay  = 0.990 + (self.cfg.ema_decay - 0.990) * t
+        t = 1.0 if warmup == 0 else min(1.0, self.global_step / warmup)
+        decay = 0.990 + (self.cfg.ema_decay - 0.990) * t
         self.ema.update(self.encoder, decay=decay)
 
     # ──────────────────────────────────────────────────────────
