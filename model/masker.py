@@ -177,7 +177,8 @@ class AdaptiveMasker:
             t = (epoch - 30) / 50.0   # 0→1 over ep30-79
             return [1.0 - 0.75*t, 0.75*t, 0.0]
 
-    def __call__(self, commands):
+    # def __call__(self, commands):
+    def __call__(self, commands, epoch=0):
         N, S          = commands.shape
         mask_np       = np.zeros((N, S), dtype=bool)
         cmd_np        = commands.cpu().numpy()
