@@ -99,7 +99,7 @@ class CADDataset(Dataset):
         # Forces encoder to ignore low-level parameter noise,
         # focus on block-level geometric structure
         if self.jitter_aug and self.phase == 'train':
-            CURVE_CMDS = {1, 2, 3}  # LINE_IDX, ARC_IDX, CIRCLE_IDX
+            CURVE_CMDS = {LINE_IDX, ARC_IDX, CIRCLE_IDX}  # from cadlib.macro import *
             is_curve   = np.array([int(c) in CURVE_CMDS for c in cad_vec[:, 0]])
             if is_curve.any():
                 # Only operate on curve rows — avoids clipping -1 PAD_VAL
