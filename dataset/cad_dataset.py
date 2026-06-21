@@ -24,7 +24,8 @@ class CADDataset(Dataset):
         super(CADDataset, self).__init__()
         self.raw_data = os.path.join(config.data_root, "cad_vec") # h5 data root
         self.phase = phase
-        self.aug = config.augment
+        self.aug        = config.augment
+        self.jitter_aug = getattr(config, 'jitter_aug', False)
         self.path = os.path.join(config.data_root, "train_val_test_split.json")
         with open(self.path, "r") as fp:
             self.all_data = json.load(fp)[phase]
@@ -97,7 +98,7 @@ class CADDataset(Dataset):
         # Parameter jitter augmentation — ±2 quant noise on curve args only
         # Forces encoder to ignore low-level parameter noise,
         # focus on block-level geometric structure
-        if self.aug and self.phase == 'train':
+        if self.jitter_aug and self.phase == 'train':
             CURVE_CMDS = {1, 2, 3}  # LINE_IDX, ARC_IDX, CIRCLE_IDX
             is_curve   = np.array([int(c) in CURVE_CMDS for c in cad_vec[:, 0]])
             if is_curve.any():
