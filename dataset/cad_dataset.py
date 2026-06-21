@@ -101,11 +101,12 @@ class CADDataset(Dataset):
             CURVE_CMDS = {1, 2, 3}  # LINE_IDX, ARC_IDX, CIRCLE_IDX
             is_curve   = np.array([int(c) in CURVE_CMDS for c in cad_vec[:, 0]])
             if is_curve.any():
-                jitter          = np.random.randint(-2, 3, size=cad_vec.shape)
-                jitter[~is_curve] = 0   # only curve rows
-                jitter[:, 0]    = 0     # never touch command column
-                cad_vec = np.clip(
-                    cad_vec.astype(np.int32) + jitter, 0, 255
+                # Only operate on curve rows — avoids clipping -1 PAD_VAL
+                # in SOL/EXT/EOS rows which would corrupt non-arg fields
+                jitter_curve = np.random.randint(-2, 3, size=cad_vec[is_curve].shape)
+                jitter_curve[:, 0] = 0   # never touch command column
+                cad_vec[is_curve] = np.clip(
+                    cad_vec[is_curve].astype(np.int32) + jitter_curve, 0, 255
                 ).astype(cad_vec.dtype)
 
         pad_len = self.max_total_len - cad_vec.shape[0]
