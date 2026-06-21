@@ -94,6 +94,7 @@ class ConfigJEPA:
         self.use_cls        = False        # CLS token pooling vs mean pool
         self.loss_type      = 'smooth_l1'  # 'smooth_l1' | 'infonce'
         self.n_mask_targets = 1            # blocks to mask (1=standard, 4=multi-target)
+        self.curriculum     = False        # curriculum masking schedule
 
     def _parse(self):
         parser = argparse.ArgumentParser()
@@ -119,5 +120,6 @@ class ConfigJEPA:
         parser.add_argument('--loss_type',         type=str,   default='smooth_l1',
                             choices=['smooth_l1', 'infonce'])
         parser.add_argument('--n_mask_targets',    type=int,   default=1)
+        parser.add_argument('--curriculum',        action='store_true', default=False)
         args = parser.parse_args()
         return parser, args

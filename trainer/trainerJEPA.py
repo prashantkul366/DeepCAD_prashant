@@ -244,7 +244,8 @@ class TrainerJEPA:
 
         # ── Masking ──────────────────────────────────────────
         if self.is_hierarchical:
-            target_mask, level_per_seq = self.masker(commands)
+            current_epoch = getattr(self, '_current_epoch', 0)
+            target_mask, level_per_seq = self.masker(commands, epoch=current_epoch)
         else:
             target_mask   = self.masker(commands)
             level_per_seq = None
@@ -406,6 +407,7 @@ class TrainerJEPA:
     # ──────────────────────────────────────────────────────────
 
     def _train_epoch(self, loader, epoch):
+        self._current_epoch = epoch
         self.encoder.train()
         self.predictor.train()
         losses = []

@@ -154,11 +154,28 @@ class AdaptiveMasker:
 
     Returns (target_mask [N,S bool], level_per_seq [list of str])
     """
-    def __init__(self, mask_ratio=0.40, mask_ratio_token=0.50, n_groups=2, n_targets=1):
+    def __init__(self, mask_ratio=0.40, mask_ratio_token=0.50, n_groups=2, n_targets=1,
+                 use_curriculum=False):
         self.mask_ratio       = mask_ratio
         self.mask_ratio_token = mask_ratio_token
         self.n_groups         = n_groups
         self.n_targets        = n_targets
+        self.use_curriculum   = use_curriculum
+
+    def _get_level_weights(self, epoch):
+        """
+        Curriculum schedule:
+          ep 0-29:  token only    → rank rises fast via easy predictions
+          ep 30-79: token → block → encoder adapts to operation-level masking
+          ep 80+:   full hierarchical (standard weights)
+        """
+        if not self.use_curriculum or epoch >= 80:
+            return [0.25, 0.50, 0.25]
+        elif epoch < 30:
+            return [1.00, 0.00, 0.00]
+        else:
+            t = (epoch - 30) / 50.0   # 0→1 over ep30-79
+            return [1.0 - 0.75*t, 0.75*t, 0.0]
 
     def __call__(self, commands):
         N, S          = commands.shape
@@ -225,7 +242,8 @@ def get_masker(strategy, cfg):
     elif strategy == 'hierarchical':
         return AdaptiveMasker(
             mask_ratio=blk_ratio, mask_ratio_token=tok_ratio,
-            n_groups=n_groups, n_targets=n_targets
+            n_groups=n_groups, n_targets=n_targets,
+            use_curriculum=getattr(cfg, 'curriculum', False)
         )
     else:
         raise ValueError(f"Unknown masking strategy: {strategy}")

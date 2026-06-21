@@ -90,8 +90,28 @@ class CADDataset(Dataset):
                     new_vec.append(ext_vec1[i])
                 cad_vec = np.concatenate(new_vec, axis=0)
 
+        # pad_len = self.max_total_len - cad_vec.shape[0]
+        # cad_vec = np.concatenate([cad_vec, EOS_VEC[np.newaxis].repeat(pad_len, axis=0)], axis=0)
+
+        
+        # Parameter jitter augmentation — ±2 quant noise on curve args only
+        # Forces encoder to ignore low-level parameter noise,
+        # focus on block-level geometric structure
+        if self.aug and self.phase == 'train':
+            CURVE_CMDS = {1, 2, 3}  # LINE_IDX, ARC_IDX, CIRCLE_IDX
+            is_curve   = np.array([int(c) in CURVE_CMDS for c in cad_vec[:, 0]])
+            if is_curve.any():
+                jitter          = np.random.randint(-2, 3, size=cad_vec.shape)
+                jitter[~is_curve] = 0   # only curve rows
+                jitter[:, 0]    = 0     # never touch command column
+                cad_vec = np.clip(
+                    cad_vec.astype(np.int32) + jitter, 0, 255
+                ).astype(cad_vec.dtype)
+
         pad_len = self.max_total_len - cad_vec.shape[0]
         cad_vec = np.concatenate([cad_vec, EOS_VEC[np.newaxis].repeat(pad_len, axis=0)], axis=0)
+
+
         # after: cad_vec = np.concatenate([cad_vec, EOS_VEC...])
         # if index < 2:
         #     print(f"\n[STEP 2 | Item {index}] After padding to max_total_len={self.max_total_len}")
