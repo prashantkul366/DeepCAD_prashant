@@ -497,9 +497,9 @@ def main():
     # Select representative sequences
     print("\nSelecting representative sequences...")
     sequences = select_representative_sequences(n_per_class=1)
-    print(f"  Selected {len(sequences)} sequences: "
-          f"{[f'cls{s[\"label\"]}({s[\"n_ext\"]}ops)' for s in sequences]}")
 
+    print(f"  Selected {len(sequences)} sequences:")
+    print([f"cls{s['label']}({s['n_ext']}ops)" for s in sequences])
     # Load models
     encoders = {}
     for mname, mcfg in MODELS.items():
