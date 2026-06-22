@@ -98,41 +98,81 @@ def load_encoder(ckpt_path, use_group_emb, key):
 
 # ── GradCAM-style token saliency ─────────────────────────────
 
+# def compute_gradient_saliency(encoder, commands, args):
+#     """
+#     GradCAM-style: saliency_i = ||∂||z|| / ∂h_i||
+#     where h_i is the i-th token's initial embedding vector.
+
+#     commands: (1, S) long
+#     args:     (1, S, 16) long
+#     Returns:  (S,) numpy saliency per token
+#     """
+#     encoder.eval()
+#     commands_sf = commands.permute(1, 0)   # (S, 1)
+#     args_sf     = args.permute(1, 0, 2)   # (S, 1, 16)
+
+#     kpm       = _get_key_padding_mask(commands_sf, seq_dim=0)
+#     grp_mask  = (_get_group_mask(commands_sf, seq_dim=0)
+#                  if encoder.use_group else None)
+
+#     # Get initial embedding — this is our "feature map" analog
+#     src = encoder.embedding(commands_sf, args_sf, grp_mask).float()
+#     src.requires_grad_(True)
+
+#     # Forward through transformer (no masking for saliency)
+#     out     = encoder.encoder(src, mask=None, src_key_padding_mask=kpm)
+#     out     = encoder.output_norm(out)
+
+#     # Mean pool over non-EOS positions
+#     pad_mask = _get_padding_mask(commands_sf, seq_dim=0)  # (S, 1, 1)
+#     z = (out * pad_mask).sum(0) / pad_mask.sum(0).clamp(min=1)  # (1, d)
+
+#     # Scalar = L2 norm of embedding
+#     score = z.norm(dim=-1).sum()
+#     score.backward()
+
+#     # Saliency = gradient magnitude at each token
+#     saliency = src.grad.norm(dim=-1).squeeze(1)  # (S,)
+#     saliency = saliency / (saliency.max() + 1e-8)
+#     return saliency.detach().cpu().numpy()
+
 def compute_gradient_saliency(encoder, commands, args):
     """
     GradCAM-style: saliency_i = ||∂||z|| / ∂h_i||
     where h_i is the i-th token's initial embedding vector.
-
-    commands: (1, S) long
-    args:     (1, S, 16) long
-    Returns:  (S,) numpy saliency per token
     """
     encoder.eval()
-    commands_sf = commands.permute(1, 0)   # (S, 1)
-    args_sf     = args.permute(1, 0, 2)   # (S, 1, 16)
+    commands_sf = commands.permute(1, 0)
+    args_sf     = args.permute(1, 0, 2)
 
-    kpm       = _get_key_padding_mask(commands_sf, seq_dim=0)
-    grp_mask  = (_get_group_mask(commands_sf, seq_dim=0)
-                 if encoder.use_group else None)
+    kpm      = _get_key_padding_mask(commands_sf, seq_dim=0)
+    grp_mask = (_get_group_mask(commands_sf, seq_dim=0)
+                if encoder.use_group else None)
 
-    # Get initial embedding — this is our "feature map" analog
-    src = encoder.embedding(commands_sf, args_sf, grp_mask).float()
-    src.requires_grad_(True)
+    # Step 1: compute embedding with no_grad (just getting values)
+    with torch.no_grad():
+        src_base = encoder.embedding(commands_sf, args_sf, grp_mask).float()
 
-    # Forward through transformer (no masking for saliency)
-    out     = encoder.encoder(src, mask=None, src_key_padding_mask=kpm)
-    out     = encoder.output_norm(out)
+    # Step 2: create a LEAF tensor — gradient will accumulate here
+    src = src_base.clone().detach().requires_grad_(True)
 
-    # Mean pool over non-EOS positions
+    # Step 3: forward through transformer (no no_grad — need grad flow)
+    out      = encoder.encoder(src.half() if next(encoder.parameters()).dtype == torch.float16
+                               else src,
+                               mask=None, src_key_padding_mask=kpm)
+    out      = encoder.output_norm(out).float()
+
+    # Step 4: mean pool over non-EOS positions
     pad_mask = _get_padding_mask(commands_sf, seq_dim=0)  # (S, 1, 1)
-    z = (out * pad_mask).sum(0) / pad_mask.sum(0).clamp(min=1)  # (1, d)
+    z        = (out * pad_mask).sum(0) / pad_mask.sum(0).clamp(min=1)  # (1, d)
 
-    # Scalar = L2 norm of embedding
+    # Step 5: scalar → backward
     score = z.norm(dim=-1).sum()
     score.backward()
 
-    # Saliency = gradient magnitude at each token
-    saliency = src.grad.norm(dim=-1).squeeze(1)  # (S,)
+    # Step 6: saliency = gradient magnitude per token
+    assert src.grad is not None, "Gradient is None — check encoder dtype"
+    saliency = src.grad.float().norm(dim=-1).squeeze(1)  # (S,)
     saliency = saliency / (saliency.max() + 1e-8)
     return saliency.detach().cpu().numpy()
 
