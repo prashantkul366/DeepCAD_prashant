@@ -311,10 +311,15 @@ def extract_skexgen(test_ids):
 
     cmd_enc, param_enc, ext_enc = load_skexgen_encoders()
 
-    # Infer embedding dim
-    dummy_code_dim = cmd_enc.codebook_dim
-    total_dim      = 3 * 4 * dummy_code_dim   # 3 encoders × 4 codes × codebook_dim
-    print(f"  Embedding dim per encoder: {4 * dummy_code_dim}  |  Total: {total_dim}")
+    # # Infer embedding dim
+    # dummy_code_dim = cmd_enc.codebook_dim
+    # total_dim      = 3 * 4 * dummy_code_dim   # 3 encoders × 4 codes × codebook_dim
+    # print(f"  Embedding dim per encoder: {4 * dummy_code_dim}  |  Total: {total_dim}")
+    # NEW:
+    total_dim = (cmd_enc.code_len   * cmd_enc.codebook_dim +
+                 param_enc.code_len * param_enc.codebook_dim +
+                 ext_enc.code_len   * ext_enc.codebook_dim)
+    print(f"  Total embedding dim: {total_dim}")
 
     embeddings = np.zeros((len(test_ids), total_dim), dtype=np.float32)
     missing    = 0
