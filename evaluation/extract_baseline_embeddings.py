@@ -90,31 +90,65 @@ def build_skexgen_config(cmd_ckpt, param_ckpt, ext_ckpt):
     return config, cmd_num_code, param_num_code, ext_num_code
 
 
+# def load_skexgen_encoders():
+#     """Load all three SkexGen encoders."""
+#     cmd_ckpt   = torch.load(SKEX_CKPT['cmd'],   map_location='cpu', weights_only=False)
+#     param_ckpt = torch.load(SKEX_CKPT['param'], map_location='cpu', weights_only=False)
+#     ext_ckpt   = torch.load(SKEX_CKPT['ext'],   map_location='cpu', weights_only=False)
+
+#     config, cmd_nc, param_nc, ext_nc = build_skexgen_config(cmd_ckpt, param_ckpt, ext_ckpt)
+
+#     cmd_enc = CMDEncoder(config, code_len=4, max_len=80, num_code=cmd_nc).cuda()
+#     cmd_enc.load_state_dict(cmd_ckpt)
+#     cmd_enc.eval()
+
+#     param_enc = PARAMEncoder(config, quantization_bits=6,
+#                               num_code=param_nc, code_len=4, max_len=80).cuda()
+#     param_enc.load_state_dict(param_ckpt)
+#     param_enc.eval()
+
+#     ext_enc = EXTEncoder(config, quantization_bits=6,
+#                           num_code=ext_nc, code_len=4, max_len=80).cuda()
+#     ext_enc.load_state_dict(ext_ckpt)
+#     ext_enc.eval()
+
+#     print("  ✓ All SkexGen encoders loaded")
+#     return cmd_enc, param_enc, ext_enc
+
 def load_skexgen_encoders():
-    """Load all three SkexGen encoders."""
     cmd_ckpt   = torch.load(SKEX_CKPT['cmd'],   map_location='cpu', weights_only=False)
     param_ckpt = torch.load(SKEX_CKPT['param'], map_location='cpu', weights_only=False)
     ext_ckpt   = torch.load(SKEX_CKPT['ext'],   map_location='cpu', weights_only=False)
 
     config, cmd_nc, param_nc, ext_nc = build_skexgen_config(cmd_ckpt, param_ckpt, ext_ckpt)
 
-    cmd_enc = CMDEncoder(config, code_len=4, max_len=80, num_code=cmd_nc).cuda()
+    # Infer max_len from checkpoint pos_embed shape
+    # pos_embed size = max_len + code_len (4)
+    CODE_LEN = 4
+    cmd_maxlen   = int(cmd_ckpt['pos_embed.position'].shape[0])   - CODE_LEN
+    param_maxlen = int(param_ckpt['pos_embed.position'].shape[0]) - CODE_LEN
+    ext_maxlen   = int(ext_ckpt['pos_embed.position'].shape[0])   - CODE_LEN
+    print(f"  Inferred max_len: cmd={cmd_maxlen}, param={param_maxlen}, ext={ext_maxlen}")
+
+    cmd_enc = CMDEncoder(config, code_len=CODE_LEN,
+                         max_len=cmd_maxlen, num_code=cmd_nc).cuda()
     cmd_enc.load_state_dict(cmd_ckpt)
     cmd_enc.eval()
 
     param_enc = PARAMEncoder(config, quantization_bits=6,
-                              num_code=param_nc, code_len=4, max_len=80).cuda()
+                              num_code=param_nc, code_len=CODE_LEN,
+                              max_len=param_maxlen).cuda()
     param_enc.load_state_dict(param_ckpt)
     param_enc.eval()
 
     ext_enc = EXTEncoder(config, quantization_bits=6,
-                          num_code=ext_nc, code_len=4, max_len=80).cuda()
+                          num_code=ext_nc, code_len=CODE_LEN,
+                          max_len=ext_maxlen).cuda()
     ext_enc.load_state_dict(ext_ckpt)
     ext_enc.eval()
 
     print("  ✓ All SkexGen encoders loaded")
     return cmd_enc, param_enc, ext_enc
-
 
 # ── Pre-VQ embedding extractors ──────────────────────────────
 
