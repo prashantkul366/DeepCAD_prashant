@@ -2,7 +2,7 @@ import os
 import json
 import shutil
 import argparse
-from FlexCAD_Prashant.utils import parser
+# from FlexCAD_Prashant.utils import parser
 from cadlib.macro import (
     ARGS_DIM, N_ARGS, ALL_COMMANDS,
     MAX_N_EXT, MAX_N_LOOPS, MAX_N_CURVES, MAX_TOTAL_LEN
