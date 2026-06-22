@@ -124,28 +124,50 @@ def load_skexgen_encoders():
 
     # Infer max_len from checkpoint pos_embed shape
     # pos_embed size = max_len + code_len (4)
-    CODE_LEN = 4
-    cmd_maxlen   = int(cmd_ckpt['pos_embed.position'].shape[0])   - CODE_LEN
-    param_maxlen = int(param_ckpt['pos_embed.position'].shape[0]) - CODE_LEN
-    ext_maxlen   = int(ext_ckpt['pos_embed.position'].shape[0])   - CODE_LEN
-    print(f"  Inferred max_len: cmd={cmd_maxlen}, param={param_maxlen}, ext={ext_maxlen}")
+    # CODE_LEN = 4
+    # cmd_maxlen   = int(cmd_ckpt['pos_embed.position'].shape[0])   - CODE_LEN
+    # param_maxlen = int(param_ckpt['pos_embed.position'].shape[0]) - CODE_LEN
+    # ext_maxlen   = int(ext_ckpt['pos_embed.position'].shape[0])   - CODE_LEN
+    # print(f"  Inferred max_len: cmd={cmd_maxlen}, param={param_maxlen}, ext={ext_maxlen}")
 
-    cmd_enc = CMDEncoder(config, code_len=CODE_LEN,
+    # cmd_enc = CMDEncoder(config, code_len=CODE_LEN,
+    #                      max_len=cmd_maxlen, num_code=cmd_nc).cuda()
+    # cmd_enc.load_state_dict(cmd_ckpt)
+    # cmd_enc.eval()
+
+    # param_enc = PARAMEncoder(config, quantization_bits=6,
+    #                           num_code=param_nc, code_len=CODE_LEN,
+    #                           max_len=param_maxlen).cuda()
+    # param_enc.load_state_dict(param_ckpt)
+    # param_enc.eval()
+
+    # ext_enc = EXTEncoder(config, quantization_bits=6,
+    #                       num_code=ext_nc, code_len=CODE_LEN,
+    #                       max_len=ext_maxlen).cuda()
+
+    # NEW — replace with this:
+    cmd_code_len   = int(cmd_ckpt['const_embed.embed.weight'].shape[0])
+    param_code_len = int(param_ckpt['const_embed.embed.weight'].shape[0])
+    ext_code_len   = int(ext_ckpt['const_embed.embed.weight'].shape[0])
+    cmd_maxlen     = int(cmd_ckpt['pos_embed.position'].shape[0])   - cmd_code_len
+    param_maxlen   = int(param_ckpt['pos_embed.position'].shape[0]) - param_code_len
+    ext_maxlen     = int(ext_ckpt['pos_embed.position'].shape[0])   - ext_code_len
+    print(f"  code_len: cmd={cmd_code_len}, param={param_code_len}, ext={ext_code_len}")
+    print(f"  max_len:  cmd={cmd_maxlen}, param={param_maxlen}, ext={ext_maxlen}")
+
+    cmd_enc = CMDEncoder(config, code_len=cmd_code_len,
                          max_len=cmd_maxlen, num_code=cmd_nc).cuda()
-    cmd_enc.load_state_dict(cmd_ckpt)
-    cmd_enc.eval()
+    cmd_enc.load_state_dict(cmd_ckpt); cmd_enc.eval()
 
     param_enc = PARAMEncoder(config, quantization_bits=6,
-                              num_code=param_nc, code_len=CODE_LEN,
+                              num_code=param_nc, code_len=param_code_len,
                               max_len=param_maxlen).cuda()
-    param_enc.load_state_dict(param_ckpt)
-    param_enc.eval()
+    param_enc.load_state_dict(param_ckpt); param_enc.eval()
 
     ext_enc = EXTEncoder(config, quantization_bits=6,
-                          num_code=ext_nc, code_len=CODE_LEN,
+                          num_code=ext_nc, code_len=ext_code_len,
                           max_len=ext_maxlen).cuda()
-    ext_enc.load_state_dict(ext_ckpt)
-    ext_enc.eval()
+    ext_enc.load_state_dict(ext_ckpt); ext_enc.eval()
 
     print("  ✓ All SkexGen encoders loaded")
     return cmd_enc, param_enc, ext_enc
