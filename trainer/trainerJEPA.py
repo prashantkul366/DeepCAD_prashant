@@ -9,7 +9,8 @@ from model.jepa_encoder import JEPAEncoder
 from model.ema_target import EMATargetEncoder
 from model.predictor import CADJEPAPredictor, HierarchicalPredictor
 from model.masker import get_masker
-from model.model_utils import _get_key_padding_mask
+# from model.model_utils import _get_key_padding_mask
+from model.model_utils import _get_key_padding_mask, _get_group_mask, _get_padding_mask
 from model.collapse_monitor import CollapseMonitor
 from dataset.cad_dataset import get_dataloader
 from cadlib.macro import EOS_IDX
@@ -66,6 +67,14 @@ class TrainerJEPA:
         else:
             self.predictor = CADJEPAPredictor(**pred_kw).cuda()
 
+        # MAE head — only built when objective == 'mae'
+        self.mae_head = None
+        if getattr(cfg, 'objective', 'jepa') == 'mae':
+            from model.cad_mae_head import CADMAEHead
+            self.mae_head = CADMAEHead(cfg.d_model).cuda()
+            n_mae = sum(p.numel() for p in self.mae_head.parameters())
+            print(f"  MAE head params : {n_mae/1e6:.2f}M")
+
         n_enc  = sum(p.numel() for p in self.encoder.parameters())
         n_pred = sum(p.numel() for p in self.predictor.parameters())
         print(f"  Encoder params  : {n_enc/1e6:.2f}M")
@@ -80,8 +89,14 @@ class TrainerJEPA:
         decay, no_decay = [], []
         seen = set()
 
-        for name, param in (list(self.encoder.named_parameters()) +
-                             list(self.predictor.named_parameters())):
+        # for name, param in (list(self.encoder.named_parameters()) +
+        #                      list(self.predictor.named_parameters())):
+        all_params = (list(self.encoder.named_parameters()) +
+              list(self.predictor.named_parameters()))
+        if self.mae_head is not None:
+            all_params += list(self.mae_head.named_parameters())
+
+        for name, param in all_params:
             if id(param) in seen:
                 continue
             seen.add(id(param))
@@ -133,6 +148,33 @@ class TrainerJEPA:
     #     decay  = 0.990 + (self.cfg.ema_decay - 0.990) * t
     #     self.ema.update(self.encoder, decay=decay)
 
+    def _get_data2vec_targets(self, commands, args):
+        """
+        data2vec target: average of top-K normalized transformer layer
+        representations from the EMA encoder (no grad).
+        K = cfg.d2v_top_k (default 4 = all layers).
+        """
+        with torch.no_grad():
+            cmds_sf  = commands.permute(1, 0)
+            args_sf  = args.permute(1, 0, 2)
+            kpm      = _get_key_padding_mask(cmds_sf, seq_dim=0)
+            grp_mask = (_get_group_mask(cmds_sf, seq_dim=0)
+                        if self.cfg.use_group_emb else None)
+
+            src = self.ema.encoder.embedding(cmds_sf, args_sf, grp_mask)
+
+            layer_outputs = []
+            out = src
+            for layer in self.ema.encoder.encoder.layers:
+                out = layer(out, src_key_padding_mask=kpm)
+                layer_outputs.append(out)
+
+            K      = min(getattr(self.cfg, 'd2v_top_k', 4), len(layer_outputs))
+            top_k  = layer_outputs[-K:]
+            avg    = torch.stack(top_k, dim=0).mean(dim=0)   # (S, N, d)
+            target = F.layer_norm(avg, avg.shape[-1:])        # normalize each pos
+
+        return target   # (S, N, d)  — same shape as full_emb in JEPA
     def _update_ema(self):
         warmup = getattr(self.cfg, 'ema_warmup_steps', 5000)
         t = 1.0 if warmup == 0 else min(1.0, self.global_step / warmup)
@@ -263,8 +305,18 @@ class TrainerJEPA:
         ctx_emb, _ = self.encoder(commands, args, target_mask=target_mask)  # (S, N, d)
 
         # ── EMA target encoder (no grad) ─────────────────────
-        with torch.no_grad():
-            full_emb, _ = self.ema(commands, args)   # (S, N, d)
+        # with torch.no_grad():
+        #     full_emb, _ = self.ema(commands, args)   # (S, N, d)
+
+        # ── Target computation (JEPA / data2vec) ─────────────
+        objective = getattr(self.cfg, 'objective', 'jepa')
+        if objective == 'data2vec':
+            full_emb = self._get_data2vec_targets(commands, args)
+        elif objective == 'mae':
+            pass  # MAE doesn't use EMA targets
+        else:  # jepa (default)
+            with torch.no_grad():
+                full_emb, _ = self.ema(commands, args)
 
         # ── Key padding mask for predictor ───────────────────
         commands_sf      = commands.permute(1, 0)
@@ -280,7 +332,12 @@ class TrainerJEPA:
         ctx_for_pred  = ctx_emb.masked_fill(mask_sf, 0.0)        # (S, N, d)
 
         # ── Prediction loss ──────────────────────────────────
-        if self.is_hierarchical:
+        if objective == 'mae':
+            # MAE: reconstruct masked tokens directly
+            pred_loss = self._mae_forward(
+                ctx_emb, commands, args, target_mask
+            )
+        elif self.is_hierarchical:
             pred_loss = self._hierarchical_loss(
                 ctx_emb, ctx_for_pred, full_emb,
                 target_mask, key_padding_mask, level_per_seq
@@ -301,6 +358,13 @@ class TrainerJEPA:
             loss = pred_loss
 
         return loss
+    
+    def _mae_forward(self, ctx_emb, commands, args, target_mask):
+        """MAE reconstruction loss at masked positions."""
+        from model.cad_mae_head import mae_loss
+        cmd_logits, args_logits = self.mae_head(ctx_emb, target_mask)
+        return mae_loss(cmd_logits, args_logits,
+                        commands, args, target_mask)
 
     def _single_level_loss(self, ctx_for_pred, full_emb,
                             target_mask, key_padding_mask):
@@ -414,8 +478,12 @@ class TrainerJEPA:
 
     def _train_epoch(self, loader, epoch):
         self._current_epoch = epoch
+        # self.encoder.train()
+        # self.predictor.train()
         self.encoder.train()
         self.predictor.train()
+        if self.mae_head is not None:
+            self.mae_head.train()
         losses = []
         pbar   = tqdm(loader, desc=f'Ep{epoch:04d}', leave=False)
 
@@ -424,11 +492,16 @@ class TrainerJEPA:
             with torch.amp.autocast('cuda', dtype=torch.bfloat16):
                 loss = self._forward(data, compute_vicreg=True)
             loss.backward()
-            nn.utils.clip_grad_norm_(
-                list(self.encoder.parameters()) +
-                list(self.predictor.parameters()),
-                self.cfg.grad_clip
-            )
+            # nn.utils.clip_grad_norm_(
+            #     list(self.encoder.parameters()) +
+            #     list(self.predictor.parameters()),
+            #     self.cfg.grad_clip
+            # )
+            clip_params = (list(self.encoder.parameters()) +
+                        list(self.predictor.parameters()))
+            if self.mae_head is not None:
+                clip_params += list(self.mae_head.parameters())
+            nn.utils.clip_grad_norm_(clip_params, self.cfg.grad_clip)
             self.optimizer.step()
             if self.scheduler:
                 self.scheduler.step()
@@ -443,8 +516,12 @@ class TrainerJEPA:
     @torch.no_grad()
     def _val_epoch(self, loader):
         """Validation: prediction loss only, no VICReg."""
+        # self.encoder.eval()
+        # self.predictor.eval()
         self.encoder.eval()
         self.predictor.eval()
+        if self.mae_head is not None:
+            self.mae_head.eval()
         losses = []
         for data in tqdm(loader, desc='Val', leave=False):
             losses.append(self._forward(data, compute_vicreg=False).item())
@@ -457,24 +534,44 @@ class TrainerJEPA:
     def save_ckpt(self, epoch, tag=None):
         name = tag or f'ckpt_ep{epoch:04d}'
         path = os.path.join(self.cfg.model_dir, f'{name}.pt')
-        torch.save({
+        # torch.save({
+        #     'epoch':       epoch,
+        #     'global_step': self.global_step,
+        #     'encoder':     self.encoder.state_dict(),
+        #     'ema_encoder': self.ema.encoder.state_dict(),
+        #     'predictor':   self.predictor.state_dict(),
+        #     'optimizer':   self.optimizer.state_dict(),
+        # }, path)
+        ckpt = {
             'epoch':       epoch,
             'global_step': self.global_step,
             'encoder':     self.encoder.state_dict(),
             'ema_encoder': self.ema.encoder.state_dict(),
             'predictor':   self.predictor.state_dict(),
             'optimizer':   self.optimizer.state_dict(),
-        }, path)
+        }
+        if self.mae_head is not None:
+            ckpt['mae_head'] = self.mae_head.state_dict()
+        torch.save(ckpt, path)
         return path
 
     def load_ckpt(self, path):
         # ckpt = torch.load(path, map_location='cuda')
         ckpt = torch.load(path, map_location='cuda', weights_only=False)
 
+        # self.encoder.load_state_dict(ckpt['encoder'])
+        # self.ema.encoder.load_state_dict(ckpt['ema_encoder'])
+        # self.predictor.load_state_dict(ckpt['predictor'])
+        # self.optimizer.load_state_dict(ckpt['optimizer'])
+        # self.global_step = ckpt.get('global_step', 0)
+        # return ckpt['epoch']
+
         self.encoder.load_state_dict(ckpt['encoder'])
         self.ema.encoder.load_state_dict(ckpt['ema_encoder'])
         self.predictor.load_state_dict(ckpt['predictor'])
         self.optimizer.load_state_dict(ckpt['optimizer'])
+        if self.mae_head is not None and 'mae_head' in ckpt:
+            self.mae_head.load_state_dict(ckpt['mae_head'])
         self.global_step = ckpt.get('global_step', 0)
         return ckpt['epoch']
 

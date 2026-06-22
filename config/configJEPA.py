@@ -2,6 +2,7 @@ import os
 import json
 import shutil
 import argparse
+from FlexCAD_Prashant.utils import parser
 from cadlib.macro import (
     ARGS_DIM, N_ARGS, ALL_COMMANDS,
     MAX_N_EXT, MAX_N_LOOPS, MAX_N_CURVES, MAX_TOTAL_LEN
@@ -101,6 +102,10 @@ class ConfigJEPA:
         self.jitter_aug     = False        # parameter jitter augmentation
         self.no_group_emb     = False   # ablation: remove block-ID embedding
 
+        # Objective: jepa (default) | data2vec | mae
+        self.objective  = 'jepa'
+        self.d2v_top_k  = 4        # data2vec: average top-K EMA layers
+
     def _parse(self):
         parser = argparse.ArgumentParser()
         parser.add_argument('--proj_dir',         type=str,   default='proj_log')
@@ -131,5 +136,8 @@ class ConfigJEPA:
         parser.add_argument('--vicreg_lambda_c',  type=float, default=0.04)
         parser.add_argument('--no_group_emb',     action='store_true', default=False)
         parser.add_argument('--ema_warmup_steps', type=int,   default=5000)
+        parser.add_argument('--objective',   type=str, default='jepa',
+                            choices=['jepa', 'data2vec', 'mae'])
+        parser.add_argument('--d2v_top_k',   type=int, default=4)
         args = parser.parse_args()
         return parser, args
