@@ -137,7 +137,6 @@ class ConfigJEPA:
         parser.add_argument('--jitter_strength',   type=int,   default=2)
         parser.add_argument('--l0_contrast_weight',type=float, default=0.0)
         parser.add_argument('--vicreg_lambda_v',  type=float, default=1.0)
-        parser.add_argument('--vicreg_lambda_v',  type=float, default=1.0)
         parser.add_argument('--vicreg_lambda_c',  type=float, default=0.04)
         parser.add_argument('--no_group_emb',     action='store_true', default=False)
         parser.add_argument('--ema_warmup_steps', type=int,   default=5000)
