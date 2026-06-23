@@ -333,7 +333,46 @@ class AnchorFirstMasker:
                 mask_np[i, s:e+1] = True
 
         return torch.from_numpy(mask_np).to(commands.device)
-    
+
+# Add this class to masker.py — paste it just before the get_masker() function
+
+class BlockGroupMasker:
+    """
+    Block+Group intermediate masker for ablation study.
+    Isolates contribution of group-level masking.
+
+    1-block  → token fallback
+    2-block  → block masking only
+    3+ block → 50% block, 50% group (two consecutive blocks)
+    """
+    def __init__(self, mask_ratio=0.40, mask_ratio_token=0.50):
+        self.mask_ratio       = mask_ratio
+        self.mask_ratio_token = mask_ratio_token
+
+    def __call__(self, commands):
+        N, S    = commands.shape
+        mask_np = np.zeros((N, S), dtype=bool)
+        cmd_np  = commands.cpu().numpy()
+
+        for i in range(N):
+            blocks   = find_blocks(cmd_np[i])
+            n_blocks = len(blocks)
+
+            if n_blocks == 1:
+                _apply_token_masking(cmd_np[i], mask_np[i],
+                                     self.mask_ratio_token)
+            elif n_blocks == 2:
+                _apply_block_masking(blocks, mask_np[i], self.mask_ratio)
+            else:
+                # 50% block, 50% group
+                if random.random() < 0.5:
+                    _apply_block_masking(blocks, mask_np[i], self.mask_ratio)
+                else:
+                    _apply_group_masking(blocks, mask_np[i], n_groups=2)
+
+        return torch.from_numpy(mask_np).to(commands.device)
+
+
 def get_masker(strategy, cfg):
     tok_ratio = getattr(cfg, 'mask_ratio_token', 0.50)
     blk_ratio = getattr(cfg, 'mask_ratio',       0.40)
@@ -364,6 +403,9 @@ def get_masker(strategy, cfg):
                                 mask_ratio_token=tok_ratio)
     elif strategy == 'anchor_block':
         return AnchorFirstMasker(mask_ratio=blk_ratio,
+                                mask_ratio_token=tok_ratio)
+    elif strategy == 'block_group':
+        return BlockGroupMasker(mask_ratio=blk_ratio,
                                 mask_ratio_token=tok_ratio)
     else:
         raise ValueError(f"Unknown masking strategy: {strategy}")
