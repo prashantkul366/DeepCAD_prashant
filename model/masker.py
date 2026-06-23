@@ -243,7 +243,97 @@ class AdaptiveMasker:
         target_mask = torch.from_numpy(mask_np).to(commands.device)
         return target_mask, level_per_seq
 
+class MultiBlockMasker:
+    """
+    Masks 2 non-adjacent blocks simultaneously.
+    I-JEPA analog: multiple small targets, large context.
+    Non-adjacency forces global reasoning over sequence.
+    Falls back to single block if not enough blocks.
+    """
+    def __init__(self, n_targets=2, mask_ratio_token=0.50):
+        self.n_targets        = n_targets
+        self.mask_ratio_token = mask_ratio_token
 
+    def __call__(self, commands):
+        N, S    = commands.shape
+        mask_np = np.zeros((N, S), dtype=bool)
+        cmd_np  = commands.cpu().numpy()
+
+        for i in range(N):
+            blocks   = find_blocks(cmd_np[i])
+            n_blocks = len(blocks)
+
+            if n_blocks < 2:
+                # Fallback: token masking
+                _apply_token_masking(cmd_np[i], mask_np[i],
+                                     self.mask_ratio_token)
+                continue
+
+            if n_blocks < self.n_targets + 1:
+                # Not enough for non-adjacent — single block
+                _apply_block_masking(blocks, mask_np[i], 0.40)
+                continue
+
+            # Sample non-adjacent blocks
+            chosen = []
+            available = list(range(n_blocks))
+            for _ in range(self.n_targets):
+                if not available:
+                    break
+                pick = random.choice(available)
+                chosen.append(pick)
+                # Remove adjacent indices
+                available = [x for x in available
+                             if abs(x - pick) > 1]
+
+            for idx in chosen:
+                s, e = blocks[idx]
+                mask_np[i, s:e+1] = True
+
+        return torch.from_numpy(mask_np).to(commands.device)
+    
+class AnchorFirstMasker:
+    """
+    First block always kept as geometric anchor.
+    Supported by block LOO analysis: first block 3.5x more
+    influential than last block for shape identity.
+    Masker routes: never touch block index 0.
+    """
+    def __init__(self, mask_ratio=0.40, mask_ratio_token=0.50):
+        self.mask_ratio       = mask_ratio
+        self.mask_ratio_token = mask_ratio_token
+
+    def __call__(self, commands):
+        N, S    = commands.shape
+        mask_np = np.zeros((N, S), dtype=bool)
+        cmd_np  = commands.cpu().numpy()
+
+        for i in range(N):
+            blocks   = find_blocks(cmd_np[i])
+            n_blocks = len(blocks)
+
+            if n_blocks < 2:
+                # Single block: token masking only
+                _apply_token_masking(cmd_np[i], mask_np[i],
+                                     self.mask_ratio_token)
+                continue
+
+            # Candidates: all blocks EXCEPT first (index 0)
+            candidates = list(range(1, n_blocks))
+            n_mask = max(1, min(
+                int(np.ceil((n_blocks - 1) * self.mask_ratio)),
+                len(candidates) - 0  # can mask all non-first
+            ))
+            # Keep at least one non-first block as context too
+            n_mask = min(n_mask, len(candidates) - 1) \
+                     if len(candidates) > 1 else 1
+
+            for idx in random.sample(candidates, n_mask):
+                s, e = blocks[idx]
+                mask_np[i, s:e+1] = True
+
+        return torch.from_numpy(mask_np).to(commands.device)
+    
 def get_masker(strategy, cfg):
     tok_ratio = getattr(cfg, 'mask_ratio_token', 0.50)
     blk_ratio = getattr(cfg, 'mask_ratio',       0.40)
@@ -269,6 +359,12 @@ def get_masker(strategy, cfg):
             n_groups=n_groups, n_targets=n_targets,
             use_curriculum=getattr(cfg, 'curriculum', False)
         )
+    elif strategy == 'multi_block':
+        return MultiBlockMasker(n_targets=2,
+                                mask_ratio_token=tok_ratio)
+    elif strategy == 'anchor_block':
+        return AnchorFirstMasker(mask_ratio=blk_ratio,
+                                mask_ratio_token=tok_ratio)
     else:
         raise ValueError(f"Unknown masking strategy: {strategy}")
     
