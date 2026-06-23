@@ -99,8 +99,10 @@ class ConfigJEPA:
         self.loss_type      = 'smooth_l1'  # 'smooth_l1' | 'infonce'
         self.n_mask_targets = 1            # blocks to mask (1=standard, 4=multi-target)
         self.curriculum     = False        # curriculum masking schedule
-        self.jitter_aug     = False        # parameter jitter augmentation
-        self.no_group_emb     = False   # ablation: remove block-ID embedding
+        self.jitter_aug          = False   # parameter jitter augmentation
+        self.jitter_strength     = 2       # ← NEW: jitter range ±N
+        self.l0_contrast_weight  = 0.0    # ← NEW: weight for L0 NT-Xent loss
+        self.no_group_emb        = False   # ablation: remove block-ID embedding
 
         # Objective: jepa (default) | data2vec | mae
         self.objective  = 'jepa'
@@ -132,6 +134,9 @@ class ConfigJEPA:
         parser.add_argument('--n_mask_targets',    type=int,   default=1)
         parser.add_argument('--curriculum',        action='store_true', default=False)
         parser.add_argument('--jitter_aug',        action='store_true', default=False)
+        parser.add_argument('--jitter_strength',   type=int,   default=2)
+        parser.add_argument('--l0_contrast_weight',type=float, default=0.0)
+        parser.add_argument('--vicreg_lambda_v',  type=float, default=1.0)
         parser.add_argument('--vicreg_lambda_v',  type=float, default=1.0)
         parser.add_argument('--vicreg_lambda_c',  type=float, default=0.04)
         parser.add_argument('--no_group_emb',     action='store_true', default=False)

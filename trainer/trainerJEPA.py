@@ -357,6 +357,12 @@ class TrainerJEPA:
         else:
             loss = pred_loss
 
+        # L0 contrastive: NT-Xent directly on embedding-layer representations
+        l0_w = getattr(self.cfg, 'l0_contrast_weight', 0.0)
+        if compute_vicreg and l0_w > 0.0:
+            l0_loss = self._l0_nt_xent_loss(commands, args)
+            loss    = loss + l0_w * l0_loss
+
         return loss
     
     def _mae_forward(self, ctx_emb, commands, args, target_mask):
@@ -578,6 +584,48 @@ class TrainerJEPA:
     # ──────────────────────────────────────────────────────────
     #  Main train loop
     # ──────────────────────────────────────────────────────────
+
+    def _l0_nt_xent_loss(self, commands, args, temperature=0.07):
+        """
+        NT-Xent on mean-pooled L0 (embedding layer only) representations.
+        View 1: args already jittered by dataloader.
+        View 2: independent jitter drawn here (different random seed).
+        Directly optimises the embedding layer for retrieval.
+        """
+        commands_sf = commands.permute(1, 0)
+        args_sf     = args.permute(1, 0, 2)
+        grp_mask    = (_get_group_mask(commands_sf, seq_dim=0)
+                       if self.cfg.use_group_emb else None)
+        pad         = _get_padding_mask(commands_sf, seq_dim=0)  # (S, N, 1)
+
+        # View 1
+        src_v1 = self.encoder.embedding(commands_sf, args_sf, grp_mask).float()
+        z_v1   = (src_v1 * pad).sum(0) / pad.sum(0).clamp(min=1)  # (N, d)
+
+        # View 2 — independent jitter, same strength as training
+        from cadlib.macro import SOL_IDX, EXT_IDX, EOS_IDX
+        s       = getattr(self.cfg, 'jitter_strength', 2)
+        noise   = torch.randint(-s, s+1, args_sf.shape, device=args_sf.device)
+        special = ((commands_sf == SOL_IDX) |
+                   (commands_sf == EXT_IDX) |
+                   (commands_sf == EOS_IDX)).unsqueeze(-1).expand_as(noise)
+        noise[special] = 0
+        args_v2 = (args_sf + noise).clamp(0, 255)
+        src_v2  = self.encoder.embedding(commands_sf, args_v2, grp_mask).float()
+        z_v2    = (src_v2 * pad).sum(0) / pad.sum(0).clamp(min=1)
+
+        # NT-Xent
+        z1  = F.normalize(z_v1, dim=-1)
+        z2  = F.normalize(z_v2, dim=-1)
+        N   = z1.shape[0]
+        z   = torch.cat([z1, z2], dim=0)
+        sim = torch.mm(z, z.T) / temperature
+        sim.fill_diagonal_(float('-inf'))
+        labels = torch.cat([
+            torch.arange(N, 2*N, device=z.device),
+            torch.arange(N,      device=z.device)
+        ])
+        return F.cross_entropy(sim, labels)
 
     def train(self):
         cfg          = self.cfg

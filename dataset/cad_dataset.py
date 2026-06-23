@@ -26,6 +26,7 @@ class CADDataset(Dataset):
         self.phase = phase
         self.aug        = config.augment
         self.jitter_aug = getattr(config, 'jitter_aug', False)
+        self.jitter_strength = getattr(config, 'jitter_strength', 2) 
         self.path = os.path.join(config.data_root, "train_val_test_split.json")
         with open(self.path, "r") as fp:
             self.all_data = json.load(fp)[phase]
@@ -104,7 +105,9 @@ class CADDataset(Dataset):
             if is_curve.any():
                 # Only operate on curve rows — avoids clipping -1 PAD_VAL
                 # in SOL/EXT/EOS rows which would corrupt non-arg fields
-                jitter_curve = np.random.randint(-2, 3, size=cad_vec[is_curve].shape)
+                # jitter_curve = np.random.randint(-2, 3, size=cad_vec[is_curve].shape)
+                s = self.jitter_strength
+                jitter_curve = np.random.randint(-s, s+1, size=cad_vec[is_curve].shape)
                 jitter_curve[:, 0] = 0   # never touch command column
                 cad_vec[is_curve] = np.clip(
                     cad_vec[is_curve].astype(np.int32) + jitter_curve, 0, 255

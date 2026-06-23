@@ -225,7 +225,7 @@ class AdaptiveMasker:
             level_per_seq.append(level)
 
             # Apply masking
-            if level == 'token':
+            if level == 'token':    
                 _apply_token_masking(cmd_np[i], mask_np[i], self.mask_ratio_token)
             elif level == 'block':
                 if n_blocks >= 2:
