@@ -119,7 +119,8 @@ class ConfigJEPA:
 
         # ── Paths ─────────────────────────────────────────────────────────
         p.add_argument('--proj_dir',    type=str, default='proj_log')
-        p.add_argument('--data_root',   type=str, default='data')
+        # p.add_argument('--data_root',   type=str, default='data')
+        p.add_argument('--data_root', type=str, default='/content/deepcad_data')
         p.add_argument('--exp_name',    type=str, default='cad_jepa')
         p.add_argument('--dedup_ids_path', type=str,
                        default='data/train_dedup_ids.json',
