@@ -124,35 +124,57 @@ class TrainerJEPA:
     # = 2.7 epochs. With weak early gradient signal the target becomes stale.
     # ─────────────────────────────────────────────────────────────────────────
 
+    # def _get_ema_momentum(self, total_steps):
+    #     s         = self.global_step
+    #     warmup    = self.cfg.ema_warmup_steps
+    #     final_mom = self.cfg.ema_decay   # default 0.999
+
+    #     if s < warmup:
+    #         # Phase 1: linear ramp 0.990 → 0.994
+    #         t = s / max(1, warmup)
+    #         return 0.990 + (0.994 - 0.990) * t
+
+    #     phase2_end = total_steps // 2
+    #     phase3_end = total_steps * 3 // 4
+
+    #     if s < phase2_end:
+    #         # Phase 2: hold at 0.994
+    #         return 0.994
+
+    #     if s < phase3_end:
+    #         # Phase 3: ramp 0.994 → 0.997
+    #         t = (s - phase2_end) / max(1, phase3_end - phase2_end)
+    #         return 0.994 + (0.997 - 0.994) * t
+
+    #     # Phase 4: ramp 0.997 → final_mom
+    #     t = (s - phase3_end) / max(1, total_steps - phase3_end)
+    #     return 0.997 + (final_mom - 0.997) * t
+
+    # FIND _get_ema_momentum and REPLACE entirely:
     def _get_ema_momentum(self, total_steps):
-        s         = self.global_step
-        warmup    = self.cfg.ema_warmup_steps
-        final_mom = self.cfg.ema_decay   # default 0.999
-
-        if s < warmup:
-            # Phase 1: linear ramp 0.990 → 0.994
-            t = s / max(1, warmup)
+        # Epoch-based schedule — more intuitive for this dataset
+        # total_steps / nr_epochs gives steps_per_epoch
+        steps_per_epoch = total_steps / self.cfg.nr_epochs
+        current_epoch   = self.global_step / max(1, steps_per_epoch)
+        
+        if current_epoch < 5:
+            # Phase 1: warmup 0.990 → 0.994
+            t = current_epoch / 5.0
             return 0.990 + (0.994 - 0.990) * t
-
-        phase2_end = total_steps // 2
-        phase3_end = total_steps * 3 // 4
-
-        if s < phase2_end:
-            # Phase 2: hold at 0.994
+        elif current_epoch < 100:
+            # Phase 2: hold 0.994
             return 0.994
-
-        if s < phase3_end:
+        elif current_epoch < 200:
             # Phase 3: ramp 0.994 → 0.997
-            t = (s - phase2_end) / max(1, phase3_end - phase2_end)
+            t = (current_epoch - 100) / 100.0
             return 0.994 + (0.997 - 0.994) * t
-
-        # Phase 4: ramp 0.997 → final_mom
-        t = (s - phase3_end) / max(1, total_steps - phase3_end)
-        return 0.997 + (final_mom - 0.997) * t
-
-    def _update_ema(self, total_steps):
-        momentum = self._get_ema_momentum(total_steps)
-        self.ema.update(self.encoder, decay=momentum)
+        else:
+            # Phase 4: ramp 0.997 → ema_decay (0.999)
+            t = min(1.0, (current_epoch - 200) / 200.0)
+            return 0.997 + (self.cfg.ema_decay - 0.997) * t
+        def _update_ema(self, total_steps):
+            momentum = self._get_ema_momentum(total_steps)
+            self.ema.update(self.encoder, decay=momentum)
 
     # ── Monitor sample ────────────────────────────────────────────────────────
 
