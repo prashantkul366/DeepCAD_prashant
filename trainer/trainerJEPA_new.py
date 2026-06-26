@@ -172,9 +172,10 @@ class TrainerJEPA:
             # Phase 4: ramp 0.997 → ema_decay (0.999)
             t = min(1.0, (current_epoch - 200) / 200.0)
             return 0.997 + (self.cfg.ema_decay - 0.997) * t
-        def _update_ema(self, total_steps):
-            momentum = self._get_ema_momentum(total_steps)
-            self.ema.update(self.encoder, decay=momentum)
+    
+    def _update_ema(self, total_steps):
+        momentum = self._get_ema_momentum(total_steps)
+        self.ema.update(self.encoder, decay=momentum)
 
     # ── Monitor sample ────────────────────────────────────────────────────────
 
