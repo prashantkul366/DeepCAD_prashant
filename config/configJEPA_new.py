@@ -123,8 +123,8 @@ class ConfigJEPA:
         p.add_argument('--data_root', type=str, default='/content/deepcad_data')
         p.add_argument('--exp_name',    type=str, default='cad_jepa')
         p.add_argument('--dedup_ids_path', type=str,
-                       default='data/train_dedup_ids.json',
-                       help='Path to HNC-CAD deduplicated training IDs')
+               default='/content/deepcad_data/train_dedup_ids.json',
+               help='Path to HNC-CAD deduplicated training IDs')
 
         # ── Hardware ──────────────────────────────────────────────────────
         p.add_argument('-g', '--gpu_ids',   type=str, default='0')
