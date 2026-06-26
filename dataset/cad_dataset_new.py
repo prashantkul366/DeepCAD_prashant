@@ -39,7 +39,9 @@ class CADDataset(Dataset):
 
         # ── Load split ────────────────────────────────────────────────────
         # split_path = os.path.join(config.data_root, "deepcad_data/train_val_test_split.json")
-        split_path = "content/deepcad_data/train_val_test_split.json"
+        # split_path = "content/deepcad_data/train_val_test_split.json"
+        # split_path = os.path.join(config.data_root, "train_val_test_split.json")
+        split_path = os.path.join(config.data_root, "train_val_test_split.json")
         with open(split_path) as f:
             self.all_data = json.load(f)[phase]
 
