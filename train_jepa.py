@@ -1,8 +1,8 @@
 import random
 import numpy as np
 import torch
-from config.configJEPA import ConfigJEPA
-from trainer.trainerJEPA import TrainerJEPA
+from config.configJEPA_new import ConfigJEPA
+from trainer.trainerJEPA_new import TrainerJEPA
 
 
 def set_seed(seed):
