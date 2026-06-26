@@ -8,10 +8,10 @@ from tqdm import tqdm
 from model.jepa_encoder import JEPAEncoder
 from model.ema_target import EMATargetEncoder
 from model.predictor import CADJEPAPredictor
-from model.masker import get_masker
+from model.masker_new import get_masker
 from model.model_utils import _get_key_padding_mask, _get_padding_mask
 from model.collapse_monitor import CollapseMonitor
-from dataset.cad_dataset import get_dataloader
+from dataset.cad_dataset_new import get_dataloader
 from cadlib.macro import EOS_IDX
 
 
