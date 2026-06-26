@@ -90,7 +90,8 @@ def _apply_anchor_first_block_masking(blocks, mask_row, mask_ratio=0.40):
 
     for idx in random.sample(candidates, n_mask):
         s, e = blocks[idx]
-        mask_row[s:e + 1] = True
+        # mask_row[s:e + 1] = True
+        mask_row[s + 1:e] = True
 
 
 # ── Masker classes ────────────────────────────────────────────────────────────
