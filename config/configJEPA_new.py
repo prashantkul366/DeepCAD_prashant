@@ -179,4 +179,5 @@ class ConfigJEPA:
         p.add_argument('--translate_aug',       action='store_true', default=True)
         p.add_argument('--translate_strength',  type=int,   default=15)
 
-        return p.parse_args()
+        # return p.parse_args()
+        return p.parse_known_args()[0]
