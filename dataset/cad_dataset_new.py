@@ -7,6 +7,78 @@ import random
 import numpy as np
 from cadlib.macro import *
 
+# ── ContrastCAD RRE augmentation ──────────────────────────────────────────────
+def _rre_re_extrude(command, args):
+    """Randomize extrusion distance parameters."""
+    command, args = command.copy(), args.copy()
+    ext_indices = np.where(command == EXT_IDX)[0]
+    for idx in ext_indices:
+        args[idx][-4:-2] = np.random.randint(0, ARGS_DIM, (2,))
+        args[idx][-1]    = np.random.randint(0, 3)
+    return command, args
+
+def _rre_arc_augment(command, args):
+    """Randomly convert some LINE tokens to ARC tokens."""
+    cad_vec   = np.hstack([command[:, np.newaxis], args])
+    line_pos  = np.where(cad_vec[:, 0] == LINE_IDX)[0]
+    if len(line_pos) == 0:
+        return command, args
+    n_change  = random.randint(1, len(line_pos))
+    targets   = np.random.choice(line_pos, n_change, replace=False)
+    for idx in targets:
+        ex, ey = cad_vec[idx, 1:3]
+        angle  = random.randint(1, 255)
+        flag   = random.randint(0, 1)
+        cad_vec[idx] = np.array([ARC_IDX, ex, ey, angle, flag] + [-1]*12)
+    return cad_vec[:, 0], cad_vec[:, 1:]
+
+def _rre_replace_block(command, args, data_root, all_ids):
+    """Swap a random block with one from another sequence."""
+    ext_indices = np.where(command == EXT_IDX)[0]
+    if len(ext_indices) <= 1:
+        return command, args
+    cad_vec  = np.hstack([command[:, np.newaxis], args])
+    ext_vec1 = np.split(cad_vec, ext_indices + 1, axis=0)[:-1]
+
+    data_id2 = all_ids[random.randint(0, len(all_ids) - 1)]
+    h5_path2 = os.path.join(data_root, 'cad_vec', data_id2 + '.h5')
+    try:
+        with h5py.File(h5_path2, 'r') as fp:
+            cad_vec2 = fp['vec'][:]
+    except Exception:
+        return command, args
+
+    ext_idx2 = np.where(cad_vec2[:, 0] == EXT_IDX)[0]
+    ext_vec2 = np.split(cad_vec2, ext_idx2 + 1, axis=0)[:-1]
+    if not ext_vec2:
+        return command, args
+
+    n_rep   = random.randint(1, min(len(ext_vec1) - 1, len(ext_vec2)))
+    old_idx = sorted(random.sample(range(len(ext_vec1)), n_rep))
+    new_idx = sorted(random.sample(range(len(ext_vec2)), n_rep))
+    for i in range(n_rep):
+        ext_vec1[old_idx[i]] = ext_vec2[new_idx[i]]
+
+    new_vec, total = [], 0
+    for chunk in ext_vec1:
+        total += len(chunk)
+        if total > MAX_TOTAL_LEN:
+            break
+        new_vec.append(chunk)
+    cad_vec = np.concatenate(new_vec, axis=0)
+    return cad_vec[:, 0], cad_vec[:, 1:]
+
+def apply_rre(cad_vec, data_root, all_ids, prob=0.5):
+    """Full RRE: Replace + Re-extrude + Arc augment."""
+    if random.uniform(0, 1) > prob:
+        return cad_vec
+    command, args = cad_vec[:, 0].copy(), cad_vec[:, 1:].copy()
+    command, args = _rre_replace_block(command, args, data_root, all_ids)
+    command, args = _rre_re_extrude(command, args)
+    command, args = _rre_arc_augment(command, args)
+    return np.hstack([command[:, np.newaxis], args])
+
+# ─────────────────────────────────────────────────────────────────────────────
 
 def get_dataloader(phase, config, shuffle=None):
     is_shuffle = phase == 'train' if shuffle is None else shuffle
@@ -33,6 +105,9 @@ class CADDataset(Dataset):
         self.jitter_str    = getattr(config, 'jitter_strength',  2)
         self.translate_aug = getattr(config, 'translate_aug',    False)
         self.translate_str = getattr(config, 'translate_strength', 15)
+        self.data_root           = config.data_root   # needed for RRE block replacement
+        self.dataset_augment_type = getattr(config, 'dataset_augment_type', None)
+        self.dataset_augment_prob = getattr(config, 'dataset_augment_prob', 0.5)
         self.max_total_len = config.max_total_len
         self.max_n_loops   = config.max_n_loops
         self.max_n_curves  = config.max_n_curves
@@ -168,6 +243,16 @@ class CADDataset(Dataset):
         # Applied after jitter — both augmentations are independent.
         if self.translate_aug and self.phase == 'train':
             cad_vec = self._apply_translate_aug(cad_vec)
+
+        # ── RRE augmentation (ContrastCAD) ────────────────────────────────
+        # Replace + Re-extrude + Arc augment.
+        # Applied only when dataset_augment_type='rre', train phase only.
+        # Must run BEFORE padding — operates on raw unpadded cad_vec.
+        if self.dataset_augment_type == 'rre' and self.phase == 'train':
+            cad_vec = apply_rre(
+                cad_vec, self.data_root, self.all_data,
+                prob=self.dataset_augment_prob
+            )
 
         # ── Padding to max_total_len ──────────────────────────────────────
         pad_len = self.max_total_len - cad_vec.shape[0]
