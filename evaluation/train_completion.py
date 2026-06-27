@@ -1,4 +1,4 @@
-%%writefile /content/DeepCAD_prashant/evaluation/train_completion.py
+# %%writefile /content/DeepCAD_prashant/evaluation/train_completion.py
 import os, sys, numpy as np, torch, torch.nn as nn
 sys.path.insert(0, '/content/DeepCAD_prashant')
 from tqdm import tqdm
