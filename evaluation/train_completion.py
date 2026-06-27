@@ -182,8 +182,8 @@ class CompletionTrainer:
             z = self.encoder.get_pooled_embedding(ctx_cmd, ctx_args).unsqueeze(0)
             cmd_logits, args_logits = self.decoder(z)
 
-            out_cmd  = cmd_logits.permute(1,0,2).argmax(-1).cpu().numpy()         # (N, 60)
-            out_args = args_logits.permute(1,0,2,3).argmax(-1).cpu().numpy() - 1  # (N, 60, 16)
+            out_cmd  = cmd_logits.permute(1,0,2).argmax(-1).cpu().numpy()
+            out_args = args_logits.permute(1,0,2,3).argmax(-1).cpu().numpy() - 1
 
             for i, seq_id in enumerate(batch['id']):
                 out_vec = torch.cat([out_cmd[i:i+1].T,
