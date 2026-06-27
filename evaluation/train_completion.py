@@ -89,24 +89,23 @@ class CompletionDataset(Dataset):
 
 # ── Completion Loss ────────────────────────────────────────────────────────────
 def completion_loss(cmd_logits, args_logits, full_cmd, full_args, weights=(1.0, 2.0)):
-    """Standard AE loss on full sequence reconstruction."""
+    """Standard AE loss on full sequence reconstruction. Batch-first throughout."""
     from model.model_utils import _get_padding_mask, _get_visibility_mask
-    cmd_sf  = full_cmd.permute(1, 0)    # (S, N)
-    vis     = _get_visibility_mask(cmd_sf, seq_dim=0)
-    pad     = _get_padding_mask(cmd_sf, seq_dim=0, extended=True) * vis.unsqueeze(-1)
+    from cadlib.macro import CMD_ARGS_MASK
 
-    cmd_logits_sf  = cmd_logits.permute(1, 0, 2)          # (S, N, n_cmd)
-    args_logits_sf = args_logits.permute(1, 0, 2, 3)      # (S, N, n_args, args_dim)
+    # full_cmd: (N, S) batch-first
+    vis = _get_visibility_mask(full_cmd, seq_dim=-1)          # (N,)
+    pad = (_get_padding_mask(full_cmd, seq_dim=-1, extended=True)  # (N, S)
+           * vis.unsqueeze(-1))                                # (N, 1) → (N, S)
 
-    # Command loss
+    # Command loss — cmd_logits: (N, S, n_cmd)
     loss_cmd = nn.functional.cross_entropy(
-        cmd_logits_sf[pad.bool()].reshape(-1, cmd_logits_sf.shape[-1]),
-        cmd_sf[pad.squeeze(-1).bool()].reshape(-1).long()
+        cmd_logits[pad.bool()].reshape(-1, cmd_logits.shape[-1]),
+        full_cmd[pad.bool()].reshape(-1).long()
     )
 
-    # Args loss
-    from cadlib.macro import CMD_ARGS_MASK
-    mask = torch.tensor(CMD_ARGS_MASK).cuda()[full_cmd.long()]  # (N, S, n_args)
+    # Args loss — args_logits: (N, S, n_args, args_dim)
+    mask     = torch.tensor(CMD_ARGS_MASK).cuda()[full_cmd.long()]  # (N, S, n_args)
     args_dim = args_logits.shape[-1]
     loss_args = nn.functional.cross_entropy(
         args_logits[mask.bool()].reshape(-1, args_dim),
