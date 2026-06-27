@@ -23,10 +23,10 @@ class CADContrastiveLoss(nn.Module):
         tgt_commands = output["tgt_commands"]   # (N, S)
         tgt_args     = output["tgt_args"]       # (N, S, n_args)
 
-        visibility_mask = _get_visibility_mask(tgt_commands, seq_dim=-1)  # (N, 1)
+        visibility_mask = _get_visibility_mask(tgt_commands, seq_dim=-1)  # (N,)
         padding_mask    = (
             _get_padding_mask(tgt_commands, seq_dim=-1, extended=True)    # (N, S)
-            * visibility_mask                                              # (N, 1) → broadcasts
+            * visibility_mask.unsqueeze(-1)                               # (N, 1) → broadcasts
         )   # (N, S)
 
         command_logits = output["command_logits"]   # (N, S, n_commands)
