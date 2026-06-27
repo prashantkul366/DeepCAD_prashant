@@ -117,7 +117,7 @@ class TrainerMAE:
             import shutil
             dest = os.path.join(drive_dir, os.path.basename(path))
             shutil.copy(path, dest)
-            print(f'  [Drive] Backed up → {dest}')
+            # print(f'  [Drive] Backed up → {dest}')
 
     def save_ckpt(self, epoch, tag=None):
         name = tag or f'ckpt_ep{epoch:04d}'
