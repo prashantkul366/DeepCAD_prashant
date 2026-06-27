@@ -450,14 +450,21 @@ class TrainerJEPA:
     def save_ckpt(self, epoch, tag=None):
         name = tag or f'ckpt_ep{epoch:04d}'
         path = os.path.join(self.cfg.model_dir, f'{name}.pt')
-        torch.save({
+        ckpt = {
             'epoch':       epoch,
             'global_step': self.global_step,
             'encoder':     self.encoder.state_dict(),
             'ema_encoder': self.ema.encoder.state_dict(),
             'predictor':   self.predictor.state_dict(),
             'optimizer':   self.optimizer.state_dict(),
-        }, path)
+        }
+        torch.save(ckpt, path)
+
+        # ── Drive backup ──────────────────────────────────────────
+        drive_dir = getattr(self.cfg, 'drive_backup_dir', None)
+        if drive_dir and os.path.exists(drive_dir):
+            import shutil
+            shutil.copy(path, os.path.join(drive_dir, f'{name}.pt'))
         return path
 
     def load_ckpt(self, path):

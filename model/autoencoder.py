@@ -78,6 +78,31 @@ class Encoder(nn.Module):
         z = (memory * padding_mask).sum(dim=0, keepdim=True) / padding_mask.sum(dim=0, keepdim=True) # (1, N, dim_z)
         return z
 
+    @torch.no_grad()
+    def get_pooled_embedding(self, commands, args):
+        """
+        Downstream eval — same interface as JEPAEncoder.get_pooled_embedding().
+        Returns pre-bottleneck mean-pooled embedding: (N, d_model).
+        Pre-bottleneck = no Tanh squashing, preserves distance structure.
+        commands: (N, S) long  batch-first
+        args:     (N, S, 16) long  batch-first
+        Returns:  (N, 256)
+        """
+        commands_sf = commands.permute(1, 0)        # (S, N)
+        args_sf     = args.permute(1, 0, 2)         # (S, N, 16)
+
+        padding_mask     = _get_padding_mask(commands_sf, seq_dim=0)      # (S, N, 1)
+        key_padding_mask = _get_key_padding_mask(commands_sf, seq_dim=0)  # (N, S)
+        group_mask       = (_get_group_mask(commands_sf, seq_dim=0)
+                            if self.use_group else None)
+
+        src    = self.embedding(commands_sf, args_sf, group_mask)
+        memory = self.encoder(src, mask=None, src_key_padding_mask=key_padding_mask)
+
+        z = (memory * padding_mask).sum(dim=0) / \
+             padding_mask.sum(dim=0).clamp(min=1)   # (N, 256)
+        return z
+
 
 class FCN(nn.Module):
     def __init__(self, d_model, n_commands, n_args, args_dim=256):
