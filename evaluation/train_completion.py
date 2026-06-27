@@ -98,21 +98,24 @@ def completion_loss(cmd_logits, args_logits, full_cmd, full_args, weights=(1.0, 
     pad = (_get_padding_mask(full_cmd, seq_dim=-1, extended=True)  # (N, S)
            * vis.unsqueeze(-1))                                # (N, 1) → (N, S)
 
-    # Command loss — cmd_logits: (N, S, n_cmd)
+    # Decoder outputs seq-first (S, N, ...) — permute to batch-first
+    cmd_bf  = cmd_logits.permute(1, 0, 2)          # (N, S, n_cmd)
+    args_bf = args_logits.permute(1, 0, 2, 3)      # (N, S, n_args, args_dim)
+
+    # Command loss
     loss_cmd = nn.functional.cross_entropy(
-        cmd_logits[pad.bool()].reshape(-1, cmd_logits.shape[-1]),
+        cmd_bf[pad.bool()].reshape(-1, cmd_bf.shape[-1]),
         full_cmd[pad.bool()].reshape(-1).long()
     )
 
-    # Args loss — args_logits: (N, S, n_args, args_dim)
+    # Args loss
     mask     = torch.tensor(CMD_ARGS_MASK).cuda()[full_cmd.long()]  # (N, S, n_args)
-    args_dim = args_logits.shape[-1]
+    args_dim = args_bf.shape[-1]
     loss_args = nn.functional.cross_entropy(
-        args_logits[mask.bool()].reshape(-1, args_dim),
+        args_bf[mask.bool()].reshape(-1, args_dim),
         full_args[mask.bool()].reshape(-1).long() + 1
     )
     return weights[0] * loss_cmd + weights[1] * loss_args
-
 
 # ── Completion Trainer ─────────────────────────────────────────────────────────
 class CompletionTrainer:
@@ -179,8 +182,8 @@ class CompletionTrainer:
             z = self.encoder.get_pooled_embedding(ctx_cmd, ctx_args).unsqueeze(0)
             cmd_logits, args_logits = self.decoder(z)
 
-            out_cmd  = cmd_logits.argmax(dim=-1).cpu()           # (N, 60)
-            out_args = args_logits.argmax(dim=-1).cpu() - 1      # (N, 60, 16)
+            out_cmd  = cmd_logits.permute(1,0,2).argmax(-1).cpu().numpy()       # (N, 60)
+            out_args = args_logits.permute(1,0,2,3).argmax(-1).cpu().numpy() - 1  # (N, 60, 16)
 
             for i, seq_id in enumerate(batch['id']):
                 out_vec = torch.cat([out_cmd[i:i+1].T,
